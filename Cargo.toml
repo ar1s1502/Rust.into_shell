@@ -1,0 +1,12 @@
+[package]
+name = "rust_shell"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "rust_shell"
+path = "src/shell.rs"
+
+[dependencies]
+rustyline = "18.0.0"
+shellwords = "1.1.0"
