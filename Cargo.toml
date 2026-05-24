@@ -8,5 +8,6 @@ name = "rust_shell"
 path = "src/shell.rs"
 
 [dependencies]
+anyhow = "1.0.102"
 rustyline = "18.0.0"
 shellwords = "1.1.0"
