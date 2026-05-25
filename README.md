@@ -11,9 +11,11 @@ features so far:
   - piping (e.g. cat Cargo.toml | head -n 10 | grep "bin")
   - basic redirection (<, >, >>)
   - heredoc support (<< operator)
-     ```cat << EOF | grep "bin"
+     ```
+     cat << EOF | grep "bin"
      bingchilling
      binturong
-     EOF```
+     EOF
+     ```
   - editor history with rustyline DefaultEditor. 
 
