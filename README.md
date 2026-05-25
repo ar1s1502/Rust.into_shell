@@ -2,8 +2,9 @@ TODO:
   - arrow key support for history
   - signal capture
   - pseudo terminal (PTY)
-  - << (heredoc) support
   - tilde expansion logic, system user display
+  - mutiline input parsing (e.g. copy-pasting multiline input)
+  - line continuation support (the \ character at end of line)
 
 features so far:
   - unix CLI tools supported via searching through $PATH variable
