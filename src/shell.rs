@@ -6,16 +6,18 @@ use std::{env, process};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::io::Write;
+use std::collections::VecDeque;
 use shellwords::{split};
 use anyhow::anyhow;
+
+const EDITOR_HISTORY: &str = "./shell_cmd_history.txt";
 
 struct ChildPr { //a child process spawned by shell
     pub handle: process::Command,
     stdin: Option<Stdio>, 
     stdout: Option<Stdio>,
     pub prog_name: String,
-    pub heredoc_content: Option<String>, //handling << operator
-    pub appended_content: Option<String>, //handling dquote, pipe, etc. 
+    pub heredoc_content: Option<String>,
 }
 
 impl ChildPr {
@@ -40,7 +42,7 @@ impl ChildPr {
         self.handle_redirect(); //apply <, >, >> etc. 
         match self.handle.spawn() {
             Ok(mut c) => {
-                if let Some(buf) = self.heredoc_content.clone() {
+                if let Some(buf) = self.heredoc_content.take() {
                     if let Some(mut stdin) = c.stdin.take() {
                         let _ = stdin.write_all(buf.as_bytes());
                     }
@@ -55,7 +57,7 @@ impl ChildPr {
         self.handle_redirect();
         match self.handle.spawn() {
             Ok(mut c) => {
-                if let Some(buf) = self.heredoc_content.clone() {
+                if let Some(buf) = self.heredoc_content.take() {
                     if let Some(mut stdin) = c.stdin.take() {
                         let _ = stdin.write_all(buf.as_bytes());
                     }
@@ -78,15 +80,16 @@ then for each child in children, wait on the child.
 automatically the console should have the stdout of the last prog
  * */
 
-fn handle_line(l: &str, rl: &mut DefaultEditor) {
-    let progs: Vec<&str> = l.split('|').collect(); 
+fn handle_cmd(cmd_buf: &str) {
+    let (cmd, mut heredocs) = extract_heredocs(cmd_buf);
+    let mut progs: Vec<&str> = cmd.split('|').collect(); 
     //only one program to execute
     if progs.len() == 1 {
-        match parse_program(progs[0], rl) {
+        if progs[0].trim().is_empty() { return; }
+        match parse_program(progs[0], &mut heredocs) {
             Ok(mut child_pr) =>{
                 match child_pr.prog_name.as_str() {
                     "?" => println!("help:"),
-                    "exit" => process::exit(0),
                     "pwd" => println!("{}", env::current_dir().unwrap().display()),
                     "cd" => match split(progs[0]) {
                         Ok(args) => set_cwd(&args),
@@ -97,12 +100,6 @@ fn handle_line(l: &str, rl: &mut DefaultEditor) {
                         Err(e) => println!("ERR: {}", e),
                     },
                 }
-
-                //add full program to editor history 
-                let mut entry = l.to_string();
-                let mut child_prs = vec![child_pr];
-                make_entry(&mut child_prs, &mut entry);
-                let _ = rl.add_history_entry(&entry);
             },
             Err(e) => println!("ERR: {}", e),
         }
@@ -113,8 +110,13 @@ fn handle_line(l: &str, rl: &mut DefaultEditor) {
     let mut cur_child: ChildPr;
     let mut child_prs: Vec<ChildPr> = Vec::with_capacity(progs.len());
     let mut pipe_setup_success = true;
+    progs.retain(|&prog| !prog.trim().is_empty()); //remove all empty commands
+                                                         //i.e. [cmd] | | [cmd] is ok
     for (i, prog) in progs.iter().enumerate() {
-        match parse_program(*prog, rl) {
+        if (*prog).trim().is_empty() { 
+            continue; 
+        }
+        match parse_program(*prog, &mut heredocs) {
             Ok(child) => cur_child = child,
             Err(e) => {
                 println!("ERR {}", e);
@@ -153,35 +155,13 @@ fn handle_line(l: &str, rl: &mut DefaultEditor) {
         });
     }
 
-    let mut entry = l.to_string();
-    make_entry(&mut child_prs, &mut entry);
-    let _ = rl.add_history_entry(&entry);
 }
 
-fn parse_program(prog: &str, rl: &mut DefaultEditor) -> anyhow::Result<ChildPr> {
+fn parse_program(prog: &str, heredocs: &mut VecDeque<String>) -> anyhow::Result<ChildPr> {
     let tkns: Vec<String>;
-    let mut appended_content = None;
     match split(prog) {
         Ok(t) => tkns = t,
-        Err(_) => {
-            let mut buffer = String::from("\n");
-            loop {
-                match rl.readline("dquote> ") {
-                    Ok(l) => {
-                        buffer.push_str(&l);
-                        buffer.push('\n');
-                        if l.trim().ends_with("\"") { break; }
-                    },
-                    Err(ReadlineError::Interrupted) => return Err(anyhow!("CTRL-C: user interrupted")),
-                    Err(ReadlineError::Eof) => return Err(anyhow!("CTRL-D: user interrupted")),
-                    Err(e) => return Err(anyhow!("{}", e)),
-                }
-            }
-            let fixed = format!("{}{}", prog, buffer); 
-            tkns = split(&fixed).unwrap();
-            buffer.replace_range(..1, ""); //skip newline char in buffer
-            appended_content = Some(buffer);
-        }
+        Err(e) => return Err(anyhow!("{}", e)),
     }
     let mut stdin = None;
     let mut stdout = None;
@@ -211,29 +191,18 @@ fn parse_program(prog: &str, rl: &mut DefaultEditor) -> anyhow::Result<ChildPr> 
                     Err(e) => return Err(anyhow!("{}", e)),
                 };
             },
-            "<<" => { //heredoc
+            "<<" => {
                 i += 1;
-                let delimiter: &String;
-                match tkns.get(i) {
-                    Some(tkn) => delimiter = tkn,
-                    None => return Err(anyhow!("please specify a delimiter")),
-                };
-                let mut buffer = String::new();
-                loop {
-                    match rl.readline("heredoc> ") {
-                        Ok(l) => {
-                            if l.trim() == delimiter { break; }
-                            buffer.push_str(&l);
-                            buffer.push('\n');
-                        },
-                        Err(ReadlineError::Interrupted) => return Err(anyhow!("CTRL-C: user interrupted")),
-                        Err(ReadlineError::Eof) => return Err(anyhow!("CTRL-D: user interrupted")),
-                        Err(e) => return Err(anyhow!("{}", e)),
-                    }
+                if tkns.get(i).is_none() {
+                    return Err(anyhow!("please specify a delimiter"));
                 }
-                heredoc_content = Some(buffer);
+                if let Some(heredoc) = heredocs.pop_front() {
+                    heredoc_content = Some(heredoc);
+                } else {
+                    return Err(anyhow!("no heredoc body specified"));
+                }
                 stdin = Some(Stdio::piped());
-            },
+            }
             _ => {
                 args.push(&tkns[i]);
             },
@@ -249,7 +218,6 @@ fn parse_program(prog: &str, rl: &mut DefaultEditor) -> anyhow::Result<ChildPr> 
         stdout: stdout,
         prog_name: args[0].clone(),
         heredoc_content: heredoc_content,
-        appended_content: appended_content,
     })
 }
 
@@ -280,35 +248,139 @@ fn expand_tilde(path: &PathBuf) -> PathBuf {
     }
 }
 
-fn make_entry(child_prs: &mut Vec<ChildPr>, entry: &mut String) {
-    entry.push('\n');
-    for child_pr in child_prs {
-        if let Some(buf) = child_pr.heredoc_content.take() {
-            entry.push_str(&buf);
-        } else if let Some(buf) = child_pr.appended_content.take() {
-            entry.push_str(&buf);
+fn validate_heredoc(cmd: &str) -> bool {
+    //if contains "<< (*)" then check if another line has the delimiter
+    //   if not then switch to heredoc continuation
+    //if has << but no delimiter, then ok
+    if let Some(idx) = cmd.find("<<") {
+        let after_arrow = cmd[idx + 2..].trim_start();
+        let delim = after_arrow.split(|c: char| c.is_whitespace() || c == '|' || c == ';')
+            .next()
+            .unwrap_or("");
+
+        if delim.is_empty() {
+            return true; // No delimiter typed yet, keep polling
         }
+        let lines = cmd.get(idx..).unwrap_or("").split('\n');
+        for l in lines.skip(1) {
+            if l.trim_end() == delim {
+                return true 
+            }
+        }
+        return false //must switch to heredoc> continuation
+    }
+    true
+}
+
+fn extract_heredocs(cmd: &str) -> (String, VecDeque<String>) {
+    let mut heredocs = VecDeque::new();
+    let mut clean_cmd = String::new();
+    let mut lines = cmd.lines();
+    while let Some(line) = lines.next() {
+        clean_cmd.push_str(line);
+        clean_cmd.push('\n');
+        if let Some(idx) = line.find("<<") {
+            match line.get((idx+2)..) {
+                Some(text) => {
+                    let delim = text.trim_start().split(|c: char| c.is_whitespace() || c == '|' || c == ';')
+                        .next()
+                        .unwrap_or("");
+                    if !delim.is_empty() {
+                        let mut payload = String::new();
+                        while let Some(heredoc_content) = lines.next() {
+                            if heredoc_content.trim_end() == delim { break; }
+                            payload.push_str(heredoc_content);
+                            payload.push('\n');
+                        }
+                        heredocs.push_back(payload);
+                    }
+                },
+                None => continue,
+            }
+        }
+    }
+    (clean_cmd, heredocs)
+}
+
+fn validate_input(cmd_: &str) -> Option<String> {
+    let cmd = cmd_.trim();
+    let mut fix_prompt = String::new();
+    match split(cmd) {
+        Ok(tkns) => {
+            if let Some(last_tkn) = tkns.last() {
+                match last_tkn.as_str() {
+                    "|" => {
+                        fix_prompt.push_str("pipe"); 
+                    },
+                    "||" => {
+                        fix_prompt.push_str("cmdor"); 
+                    },
+                    "&&" => {
+                        fix_prompt.push_str("cmdand"); 
+                    },
+                    _ => (),
+                }
+            }
+            if !validate_heredoc(cmd) {
+                fix_prompt.push_str("heredoc");
+            }
+        },
+        Err(_) => {
+            if cmd.ends_with('\\') {
+                //backslash continuation
+                fix_prompt.push_str("backslash");
+            } else {
+                //missing closing " or '
+                fix_prompt.push_str("dquote");
+            }
+        }
+    }
+    if fix_prompt.is_empty() {
+        None
+    } else {
+        fix_prompt.push_str("> ");
+        Some(fix_prompt)
     }
 }
 
 fn main() -> rustyline::Result<()> {
     let mut line_num = 0;
     let mut rl = DefaultEditor::new()?;
+    if rl.history_mut().load(Path::new(EDITOR_HISTORY)).is_err() {
+        println!("Failed to load shell command history");
+    }
+    let mut cmd_buf = String::new();
+    let mut cwd = env::current_dir().unwrap().file_name().unwrap().to_str().unwrap().to_string();
+    let mut prompt = format!("{}: {} % ", line_num, cwd);
 
     loop {
-        let cwd = env::current_dir().unwrap().file_name().unwrap().to_str().unwrap().to_string();
-        match rl.readline(&format!("{}: {} % ", line_num, cwd)) {
-            Ok(l) => {
-                if l.is_empty() {continue;}
-                handle_line(&l, &mut rl);
+        match rl.readline(&prompt) {
+            Ok(input) => {
+                if input.is_empty() {continue;}
+                if input.trim() == "exit" { exit_shell(&mut rl); };
+                cmd_buf.push_str(&input);
+                if let Some(fix_prompt) = validate_input(&cmd_buf) {
+                    prompt = fix_prompt;
+                    cmd_buf.push('\n');
+                } else {
+                    cwd = env::current_dir().unwrap().file_name().unwrap().to_str().unwrap().to_string();
+                    prompt = format!("{}: {} % ", line_num, cwd);
+                    handle_cmd(&cmd_buf); //parse and execute
+                    let _ = rl.add_history_entry(&cmd_buf);
+                    cmd_buf.clear();
+                }
             },
             Err(ReadlineError::Interrupted) => {
                 println!("CTRL-C");
-                break
+                cwd = env::current_dir().unwrap().file_name().unwrap().to_str().unwrap().to_string();
+                prompt = format!("{}: {} % ", line_num, cwd);
+                cmd_buf.clear();
             },
             Err(ReadlineError::Eof) => {
                 println!("CTRL-D");
-                break
+                cwd = env::current_dir().unwrap().file_name().unwrap().to_str().unwrap().to_string();
+                prompt = format!("{}: {} % ", line_num, cwd);
+                cmd_buf.clear();
             },
             Err(err) => {
                 println!("error: {:?}", err);
@@ -317,10 +389,17 @@ fn main() -> rustyline::Result<()> {
         }
         line_num += 1;
     }
+    Ok(())
+}
+
+fn exit_shell(rl: &mut DefaultEditor) {
     for i in 0..rl.history().len() {
         let entry = rl.history().get(i, SearchDirection::Forward).unwrap().unwrap().entry;
         println!("{}: {}", i, entry);
     }
-    Ok(())
-
+    if rl.history_mut().save(Path::new(EDITOR_HISTORY)).is_err() {
+        println!("Failed to save history");
+    }
+    
+    process::exit(0);
 }
