@@ -14,7 +14,8 @@ features so far:
   - Fully custom, state-aware, error-aware shell Lexer using the [Logos](https://docs.rs/logos/latest/logos/) crate. will pretty much behave exactly like Bash/zsh. "state" is managed through Logos as well. Different Logos enums = different shell lexer state; for example the normal lexer, which matches words and shell operators, will switch into a different lexer upon encountering a quote token like \` ' or " (for example a `>` is interpreted literally if within quotes, while it is the stdout redirect operator otherwise)
 
 **USE**
-if have cargo/rust, do `cargo r` from terminal within project directory. if not, wait till i make this a desktop app lol
+if have cargo/rust, do `cargo r` from terminal within project directory. if not, wait till i make this a desktop app lol\n
+
 Cool commands to try
 
  ```cat << EOF | grep "bin" >> tmp.txt
