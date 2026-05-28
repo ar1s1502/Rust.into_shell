@@ -34,15 +34,15 @@ cat << EOF | grep "bin" >> tmp.txt
 ```
  to tmp.txt
 
-     ```
-     cat << one << two << three
-     FIRST
-     one
-     SECOND
-     two
-     THIRD
-     three
-     ```
+```
+cat << one << two << three
+FIRST
+one
+SECOND
+two
+THIRD
+three
+```
 should print
 ```
 FIRST
