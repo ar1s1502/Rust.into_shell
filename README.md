@@ -1,21 +1,37 @@
 TODO: 
-  - arrow key support for history
-  - signal capture
   - pseudo terminal (PTY)
   - tilde expansion logic, system user display
-  - mutiline input parsing (e.g. copy-pasting multiline input)
-  - line continuation support (the \ character at end of line)
+  - tauri/react gui integration
+  - ||, &&, and & support
+  - autocomplete for shell commands
 
 features so far:
   - unix CLI tools supported via searching through $PATH variable
   - piping (e.g. cat Cargo.toml | head -n 10 | grep "bin")
-  - basic redirection (<, >, >>)
+  - redirection (<, >, >>)
   - heredoc support (<< operator)
-     ```
-     cat << EOF | grep "bin"
+  - editor history with [Rustyline](https://docs.rs/rustyline/18.0.0/rustyline/) DefaultEditor, arrow key support
+  - Fully custom Shell Lexer using the [Logos](https://docs.rs/logos/latest/logos/) crate
+
+**USE**
+if have cargo/rust, do `cargo r` from terminal within project directory. if not, wait till i make this a desktop app lol
+Cool commands to try
+ ```
+     cat << EOF | grep "bin" >> tmp.txt
      bingchilling
      binturong
      EOF
      ```
-  - editor history with rustyline DefaultEditor. 
+     should append bingchilling\nbinturong to tmp.txt
+
+     ```
+     cat << one << two << three
+     FIRST
+     one
+     SECOND
+     two
+     THIRD
+     three
+     ```
+     should print FIRST\nSECOND\nTHIRD in terminal
 
