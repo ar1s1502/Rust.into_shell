@@ -11,7 +11,7 @@ features so far:
   - redirection (<, >, >>)
   - heredoc support (<< operator)
   - editor history with [Rustyline](https://docs.rs/rustyline/18.0.0/rustyline/) DefaultEditor, arrow key support
-  - Fully custom Shell Lexer using the [Logos](https://docs.rs/logos/latest/logos/) crate
+  - Fully custom, state-aware, error-aware shell Lexer using the [Logos](https://docs.rs/logos/latest/logos/) crate. will pretty much behave exactly like Bash/zsh. "state" is managed through Logos as well. Different Logos enums = different shell lexer state; for example the normal lexer, which matches words and shell operators, will switch into a different lexer upon encountering a quote token like \` ' or " (for example a `>` is interpreted literally if within quotes, while it is the stdout redirect operator otherwise)
 
 **USE**
 if have cargo/rust, do `cargo r` from terminal within project directory. if not, wait till i make this a desktop app lol
@@ -22,7 +22,8 @@ Cool commands to try
      binturong
      EOF
      ```
-     should append bingchilling\nbinturong to tmp.txt
+     should append ```bingchilling
+      binturong``` to tmp.txt
 
      ```
      cat << one << two << three
