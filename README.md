@@ -24,11 +24,12 @@ cat << EOF | grep "bin" >> tmp.txt
  binturong
  EOF
 ```
- should append this to tmp.txt
+ should append
  ```
  bingchilling
  binturong
 ```
+ to tmp.txt
 
      ```
      cat << one << two << three
