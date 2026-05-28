@@ -40,7 +40,7 @@ cat << EOF | grep "bin" >> tmp.txt
      THIRD
      three
      ```
-     should print
+should print
 ```
 FIRST
 SECOND
