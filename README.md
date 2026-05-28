@@ -18,22 +18,31 @@ if have cargo/rust, do `cargo r` from terminal within project directory. if not,
 
 Cool commands to try
 
- ```cat << EOF | grep "bin" >> tmp.txt
-     bingchilling
-     binturong
-     EOF```
- should append this to ```bingchilling
- binturong```
+ ```
+cat << EOF | grep "bin" >> tmp.txt
+ bingchilling
+ binturong
+ EOF
+```
+ should append this to tmp.txt
+ ```
+ bingchilling
+ binturong
+```
 
-     ```cat << one << two << three
+     ```
+     cat << one << two << three
      FIRST
      one
      SECOND
      two
      THIRD
-     three```
+     three
+     ```
      should print
-  ```FIRST
-     SECOND
-     THIRD```
+```
+FIRST
+SECOND
+THIRD
+```
 
