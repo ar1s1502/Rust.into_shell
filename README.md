@@ -16,23 +16,23 @@ features so far:
 **USE**
 if have cargo/rust, do `cargo r` from terminal within project directory. if not, wait till i make this a desktop app lol
 Cool commands to try
- ```
-     cat << EOF | grep "bin" >> tmp.txt
+
+ ```cat << EOF | grep "bin" >> tmp.txt
      bingchilling
      binturong
-     EOF
-     ```
-     should append ```bingchilling
-      binturong``` to tmp.txt
+     EOF```
+ should append this to ```bingchilling
+ binturong```
 
-     ```
-     cat << one << two << three
+     ```cat << one << two << three
      FIRST
      one
      SECOND
      two
      THIRD
-     three
-     ```
-     should print FIRST\nSECOND\nTHIRD in terminal
+     three```
+     should print
+  ```FIRST
+     SECOND
+     THIRD```
 
