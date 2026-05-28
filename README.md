@@ -9,7 +9,7 @@ TODO:
 
 features so far:
   - unix CLI tools supported via searching through $PATH variable. 
-  - piping (e.g. cat Cargo.toml | head -n 10 | grep "bin") via process spawning. Because using Rust's built in [std::process] library, this should work on Windows as well. 
+  - piping (e.g. cat Cargo.toml | head -n 10 | grep "bin") via process spawning.
   - redirection (<, >, >>)
   - heredoc support (<< operator)
   - editor history with [Rustyline](https://docs.rs/rustyline/18.0.0/rustyline/) DefaultEditor, arrow key support
