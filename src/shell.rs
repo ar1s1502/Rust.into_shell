@@ -4,7 +4,7 @@ use lexer::{Tkn, LexerState};
 use logos::{Logos, Lexer};
 use rustyline::{DefaultEditor};
 use rustyline::error::ReadlineError;
-use rustyline::history::{History, SearchDirection};
+use rustyline::history::{History,};
 use std::process::Stdio;
 use std::{env, process};
 use std::fs::{File, OpenOptions};
@@ -164,6 +164,7 @@ fn handle_cmd(cmd: &str, mut heredocs: VecDeque<String>) {
 
 }
 
+//Parser
 fn parse_program(prog: &str, heredocs: &mut VecDeque<String>) -> anyhow::Result<ChildPr> {
     let tkns: Vec<String>;
     match split(prog) {
@@ -255,15 +256,15 @@ fn expand_tilde(path: &PathBuf) -> PathBuf {
     }
 }
 
-fn lex_cmd_buf(lex: &mut Lexer<Tkn>) -> Option<(usize, VecDeque<String>)> {
+fn lex_cmd_buf(lex: &mut Lexer<Tkn>) -> Option<(usize, VecDeque<String>, String)> {
     let mut cmd_length: usize = 0;
     while let Some(res) = lex.next() {
         match res {
-            Ok(Tkn::Newline(heredocs_)) => {
+            Ok(Tkn::Newline((heredocs, cmd_continuation))) => {
                 //first newline encountered finishes the command. (User pressed enter)
                 print!("\n");
                 cmd_length += 1; //+1 for newline
-                return Some((cmd_length, heredocs_));
+                return Some((cmd_length, heredocs, cmd_continuation));
             },
             Ok(Tkn::Quote(quoted_string)) => {
                 print!("tkn: \"{}\"; ", &quoted_string);
@@ -301,21 +302,23 @@ fn main() -> rustyline::Result<()> {
                 let lex_state = LexerState::new();
                 let mut lex = Tkn::lexer_with_extras(&cmd_buf, lex_state);
                 match lex_cmd_buf(&mut lex) {
-                    Some((cmd_length, heredocs)) => {
-                        println!("cmd_buf: {}cmd_length: {}", cmd_buf, cmd_length);
-                        handle_cmd(&cmd_buf[..cmd_length], heredocs);
+                    Some((cmd_length, heredocs, cmd_continuation)) => {
+                        let full_cmd = format!("{} {}", &cmd_buf[..cmd_length], &cmd_continuation);
+                        handle_cmd(&full_cmd, heredocs);
                         set_normal_prompt(&mut prompt, &line_num);
                         let _ = rl.add_history_entry(cmd_buf.trim());
                         cmd_buf.clear();
                     },
                     None => {
-                        if let Some(closer) = lex.extras.expected_closer {
-                            prompt = format!("missing {} > ", closer);
-                        } else if let Some(err) = lex.extras.syntax_err {
+                        if let Some(err) = lex.extras.syntax_err {//syntax errs get highest priority
                             println!("Syntax ERR: {}", err);
                             set_normal_prompt(&mut prompt, &line_num);
                             let _  = rl.add_history_entry(cmd_buf.trim());
                             cmd_buf.clear();
+                        } else if let Some(closer) = lex.extras.expected_closer {
+                            set_expected_closer_prompt(&mut prompt, &closer);
+                        } else if let Some(op) = lex.extras.continuation_for {
+                            set_needs_continuation_prompt(&mut prompt, &op);
                         }
                     }
                 }
@@ -332,7 +335,6 @@ fn main() -> rustyline::Result<()> {
             },
             Err(err) => {
                 println!("ERR: {:?}", err);
-                exit_shell(&mut rl);
             },
         }
     }
@@ -343,13 +345,36 @@ fn set_normal_prompt(prompt: &mut String, line_num: &usize) {
     *prompt = format!("{}: {} % ", line_num, cwd);
 }
 
+//handles cmd lines that end with \, &&, |, ||
+fn set_needs_continuation_prompt(prompt: &mut String, op: &str) {
+    match op {
+        "\\" => *prompt = String::from("> "),
+        "&&" => *prompt = String::from("CmdAnd> "), 
+        "||" => *prompt = String::from("CmdOr> "),
+        "|" => *prompt = String::from("pipe> "),
+        _ => *prompt = String::from("> "),
+    }
+}
+
+//handles unclosed quoted strings, heredocs with no closing delimiters
+fn set_expected_closer_prompt(prompt: &mut String, closer: &str) {
+    match closer {
+        "\'" | "`" => *prompt = String::from("quote> "),
+        "\"" => *prompt = String::from("dquote> "),
+        _ => *prompt = format!("missing {} for heredoc> ", closer),
+    }
+} 
+
 fn exit_shell(rl: &mut DefaultEditor) {
     //for i in 0..rl.history().len() {
     //    let entry = rl.history().get(i, SearchDirection::Forward).unwrap().unwrap().entry;
     //    println!("{}: {}", i, entry);
     //}
+    println!("exiting shell...");
     if rl.history_mut().save(Path::new(EDITOR_HISTORY)).is_err() {
         println!("Failed to save history");
+    } else {
+        println!("editory history saved to {}", EDITOR_HISTORY);
     }
     
     process::exit(0);
