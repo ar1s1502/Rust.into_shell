@@ -86,7 +86,7 @@ then for each child in children, wait on the child.
 automatically the console should have the stdout of the last prog
  * */
 
-fn handle_cmd(cmd: &str, mut heredocs: VecDeque<String>) {
+fn handle_cmd(cmd: &str, heredocs: &mut VecDeque<String>) {
     let progs: Vec<&str> = cmd
         .split('|')
         .map(|prog| prog.trim())
@@ -95,7 +95,7 @@ fn handle_cmd(cmd: &str, mut heredocs: VecDeque<String>) {
     //only one program to execute
     if progs.len() == 1 {
         if progs[0].trim().is_empty() { return; }
-        match parse_program(progs[0], &mut heredocs) {
+        match parse_program(progs[0], heredocs) {
             Ok(mut child_pr) =>{
                 match child_pr.prog_name.as_str() {
                     "?" => println!("help:"),
@@ -123,7 +123,7 @@ fn handle_cmd(cmd: &str, mut heredocs: VecDeque<String>) {
         if (*prog).trim().is_empty() { 
             continue; 
         }
-        match parse_program(*prog, &mut heredocs) {
+        match parse_program(*prog, heredocs) {
             Ok(child) => cur_child = child,
             Err(e) => {
                 println!("ERR {}", e);
@@ -302,15 +302,16 @@ fn main() -> rustyline::Result<()> {
                 let lex_state = LexerState::new();
                 let mut lex = Tkn::lexer_with_extras(&cmd_buf, lex_state);
                 match lex_cmd_buf(&mut lex) {
-                    Some((cmd_length, heredocs, cmd_continuation)) => {
+                    Some((cmd_length, mut heredocs, cmd_continuation)) => {
                         let full_cmd = format!("{} {}", &cmd_buf[..cmd_length], &cmd_continuation);
-                        handle_cmd(&full_cmd, heredocs);
+                        handle_cmd(&full_cmd, &mut heredocs);
                         set_normal_prompt(&mut prompt, &line_num);
                         let _ = rl.add_history_entry(cmd_buf.trim());
                         cmd_buf.clear();
                     },
                     None => {
-                        if let Some(err) = lex.extras.syntax_err {//syntax errs get highest priority
+                        if let Some(err) = lex.extras.syntax_err {
+                            //syntax errs get highest priority b/c they're unrecoverable
                             println!("Syntax ERR: {}", err);
                             set_normal_prompt(&mut prompt, &line_num);
                             let _  = rl.add_history_entry(cmd_buf.trim());

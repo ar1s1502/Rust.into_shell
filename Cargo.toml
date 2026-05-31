@@ -3,6 +3,12 @@ name = "rust_shell"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = [
+  "src-tauri"
+]
+resolver = "3"
+
 [[bin]]
 name = "rust_shell"
 path = "src/shell.rs"

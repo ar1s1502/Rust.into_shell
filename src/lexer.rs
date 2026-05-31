@@ -170,7 +170,7 @@ fn newline_handler(lex: &mut Lexer<Tkn>) -> Option<(VecDeque<String>, String)> {
 
     *lex = heredoc_lex.morph();
     
-    let mut cmd_continuation = String::new(); //handles any more commands on a separate input line
+    let mut cmd_continuation = String::new(); //handles any more commands inputted on on a separate line
     if lex.extras.continuation_for.is_some() {
         while let Some(res) = lex.next() {
             match res {
@@ -200,7 +200,7 @@ fn newline_handler(lex: &mut Lexer<Tkn>) -> Option<(VecDeque<String>, String)> {
 
 #[derive(Logos, Debug, PartialEq, Clone)]
 #[logos(extras = LexerState)]
-pub enum QuoteTkn {
+enum QuoteTkn {
     #[regex(r#"['"`]"#)] // Match any potential closer
     PotentialCloser,
     
@@ -215,7 +215,7 @@ pub enum QuoteTkn {
 #[derive(Logos, Debug, PartialEq, Clone)]
 #[logos(extras = LexerState)]
 #[logos(skip r"[ \t\f]+")] // Ignore this regex pattern between token
-pub enum TargetDelim { //for finding valid target after one of <, >, <<, or <<
+enum TargetDelim { //for finding valid target after one of <, >, <<, or <<
     // A valid delimiter is 1 or more characters that are NOT 
     // whitespace or shell operators.
 
@@ -231,7 +231,7 @@ pub enum TargetDelim { //for finding valid target after one of <, >, <<, or <<
 
 #[derive(Logos, Debug, PartialEq, Clone)]
 #[logos(extras = LexerState)]
-pub enum HeredocTkn {
+enum HeredocTkn {
     //match any number of characters, ended with a newline
     #[regex(r#"[^\n]*\n"#, allow_greedy = true)]
     HeredocLine,

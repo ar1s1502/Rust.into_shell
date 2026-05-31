@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>rust_shell</title>   
+
+    <link rel="stylesheet" href="./css/main.css">
+    <script type="module" src="./js/cl.ts"></script>
+
+</head>
+<body class="bg-gray-900 text-gray-200">
+<div id="cli" class="flex flex-col p-8 "> 
+    <ul id="cli_ul" class="divide-y divide-gray-300 shadow-lg rounded-lg">
+        <li>
+            <div id="cli_div" class="flex flex-col relative">
+                <textarea 
+                    id="cl" 
+                    class="w-full p-2 bg-gray-800 rounded outline-none border-2 border-transparent hover:border-slate-500 focus:border-teal-500 transition-colors"
+                    placeholder="Type a command...">
+                </textarea>
+              
+                <ul id="suggestions" 
+                    class="rounded-b z-10 px-1.5 bg-gray-950 text-gray-400 border-x border-b border-slate-700"
+                    style="display: none;">
+                </ul>
+            </div>
+        </li>
+    </ul>
+</div>
+</body>
+</html>

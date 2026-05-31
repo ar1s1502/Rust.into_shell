@@ -1,0 +1,7 @@
+@import "tailwindcss";
+
+textarea{
+    width: 100%;
+    field-sizing: content;
+}
+
