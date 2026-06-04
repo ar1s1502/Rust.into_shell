@@ -16,6 +16,16 @@ use anyhow::anyhow;
 
 const EDITOR_HISTORY: &str = "./shell_cmd_history.txt";
 
+/* 
+OSC Escape sequence's data so that frontend typescript can differentiate between shell outputs
+OSC 133 syntax: \x1b]133;${data}\x07
+see https://contour-terminal.org/vt-extensions/osc-133-shell-integration/ 
+*/
+const PROMPT_START: &str = "A";
+const PROMPT_END: &str = "B";
+const CMD_START: &str = "C";
+const CMD_END: &str = "D";
+
 struct ChildPr { //a child process spawned by shell
     pub handle: process::Command,
     //I/O streams for redirection
@@ -256,29 +266,46 @@ fn expand_tilde(path: &PathBuf) -> PathBuf {
     }
 }
 
-fn lex_cmd_buf(lex: &mut Lexer<Tkn>) -> Option<(usize, VecDeque<String>, String)> {
-    let mut cmd_length: usize = 0;
+fn lex_cmd_buf(lex: &mut Lexer<Tkn>, cmd_buf: &str) -> Option<(String, VecDeque<String>)> {
+    let mut cmd_lines: Vec<(usize, usize)> = Vec::new(); //(linestart, lineend)
+    let mut line_start: usize = lex.span().start; //0
     while let Some(res) = lex.next() {
         match res {
-            Ok(Tkn::Newline((heredocs, cmd_continuation))) => {
-                //first newline encountered finishes the command. (User pressed enter)
+            Ok(Tkn::Newline) => {
                 print!("\n");
-                cmd_length += 1; //+1 for newline
-                return Some((cmd_length, heredocs, cmd_continuation));
+                let span = lex.span();
+                cmd_lines.push((line_start, span.start + 1)); // +1 to include newline;
+                line_start = span.end;
             },
             Ok(Tkn::Quote(quoted_string)) => {
                 print!("tkn: \"{}\"; ", &quoted_string);
-                cmd_length += lex.slice().len();
             },
-            Ok(Tkn::Whitespace) => cmd_length += lex.slice().len(),
+            Ok(Tkn::Whitespace) => (), //don't print whitespace
             Ok(_) =>  {
                 print!("tkn: {}; ", lex.slice());
-                cmd_length += lex.slice().len();
             },
             Err(_) => return None,
         }
     }
-    None
+    let mut cmd = String::new();
+    //push each cmd line into cmd
+    for (l_start, l_end) in cmd_lines {
+        let line = &cmd_buf[l_start..l_end];
+        println!("cmd_line: {}", line);
+        cmd.push_str(&cmd_buf[l_start..l_end]);
+    }
+    if let Some(end_tkn) = cmd.split_whitespace().last() {
+        //can not end with either of these operators
+        if ["|", "||", "\\", "&&"].contains(&end_tkn) { return None }
+    }
+    let mut heredocs = VecDeque::with_capacity(lex.extras.heredocs.len());
+    for (doc_start, doc_end) in lex.extras.heredocs.iter() {
+        let heredoc = &cmd_buf[*doc_start..*doc_end];
+        println!("heredoc: {}", heredoc);
+        heredocs.push_back(String::from(heredoc));
+    }
+    Some((cmd, heredocs))
+
 }
 
 fn main() -> rustyline::Result<()> {
@@ -289,23 +316,24 @@ fn main() -> rustyline::Result<()> {
     let mut cmd_buf = String::new();
     let mut line_num = 0;
     let mut prompt = String::new();
-    set_normal_prompt(&mut prompt, &line_num);
+    set_normal_prompt(&mut prompt, &mut line_num);
 
     loop {
-        line_num += 1;
+        send_osc133(PROMPT_START);
         match rl.readline(&prompt) {
             Ok(input) => {
+                send_osc133(PROMPT_END);
                 if input.is_empty() {continue;}
-                if input.trim() == "exit" { exit_shell(&mut rl); };
+                if input.trim().to_lowercase() == "exit" { exit_shell(&mut rl); };
                 cmd_buf.push_str(&input);
                 cmd_buf.push('\n'); //add back newline that readline stripped after user hit Enter
                 let lex_state = LexerState::new();
                 let mut lex = Tkn::lexer_with_extras(&cmd_buf, lex_state);
-                match lex_cmd_buf(&mut lex) {
-                    Some((cmd_length, mut heredocs, cmd_continuation)) => {
-                        let full_cmd = format!("{} {}", &cmd_buf[..cmd_length], &cmd_continuation);
-                        handle_cmd(&full_cmd, &mut heredocs);
-                        set_normal_prompt(&mut prompt, &line_num);
+                send_osc133(CMD_START); //signal to frontend that output has started
+                match lex_cmd_buf(&mut lex, &cmd_buf) {
+                    Some((cmd, mut heredocs)) => {
+                        handle_cmd(&cmd, &mut heredocs);
+                        set_normal_prompt(&mut prompt, &mut line_num);
                         let _ = rl.add_history_entry(cmd_buf.trim());
                         cmd_buf.clear();
                     },
@@ -313,7 +341,7 @@ fn main() -> rustyline::Result<()> {
                         if let Some(err) = lex.extras.syntax_err {
                             //syntax errs get highest priority b/c they're unrecoverable
                             println!("Syntax ERR: {}", err);
-                            set_normal_prompt(&mut prompt, &line_num);
+                            set_normal_prompt(&mut prompt, &mut line_num);
                             let _  = rl.add_history_entry(cmd_buf.trim());
                             cmd_buf.clear();
                         } else if let Some(closer) = lex.extras.expected_closer {
@@ -323,25 +351,30 @@ fn main() -> rustyline::Result<()> {
                         }
                     }
                 }
+                send_osc133(CMD_END);
             },
             Err(ReadlineError::Interrupted) => {
+                send_osc133(PROMPT_END);
                 println!("CTRL-C");
-                set_normal_prompt(&mut prompt, &line_num);
+                set_normal_prompt(&mut prompt, &mut line_num);
                 cmd_buf.clear();
             },
             Err(ReadlineError::Eof) => {
+                send_osc133(PROMPT_END);
                 println!("CTRL-D");
-                set_normal_prompt(&mut prompt, &line_num);
+                set_normal_prompt(&mut prompt, &mut line_num);
                 cmd_buf.clear();
             },
             Err(err) => {
+                send_osc133(PROMPT_END);
                 println!("ERR: {:?}", err);
             },
         }
     }
 }
 
-fn set_normal_prompt(prompt: &mut String, line_num: &usize) {
+fn set_normal_prompt(prompt: &mut String, line_num: &mut usize) {
+    *line_num += 1;
     let cwd = env::current_dir().unwrap().file_name().unwrap().to_str().unwrap().to_string();
     *prompt = format!("{}: {} % ", line_num, cwd);
 }
@@ -360,11 +393,22 @@ fn set_needs_continuation_prompt(prompt: &mut String, op: &str) {
 //handles unclosed quoted strings, heredocs with no closing delimiters
 fn set_expected_closer_prompt(prompt: &mut String, closer: &str) {
     match closer {
-        "\'" | "`" => *prompt = String::from("quote> "),
+        "\'" => *prompt = String::from("quote> "),
+        "`" => *prompt = String::from("bquote> "),
         "\"" => *prompt = String::from("dquote> "),
         _ => *prompt = format!("missing {} for heredoc> ", closer),
     }
 } 
+
+fn format_osc133(data: &str, output: &str) -> String {
+    format!("\x1b]133;{}\x07{}\x1b]133;{}\x07", data, output, PROMPT_END)
+}
+
+fn send_osc133(data: &str) {
+    print!("\x1b]133;{}\x07", data);
+    //flush because stdout might buffer until newline
+    let _ = std::io::stdout().flush();
+}
 
 fn exit_shell(rl: &mut DefaultEditor) {
     //for i in 0..rl.history().len() {
@@ -372,10 +416,11 @@ fn exit_shell(rl: &mut DefaultEditor) {
     //    println!("{}: {}", i, entry);
     //}
     println!("exiting shell...");
-    if rl.history_mut().save(Path::new(EDITOR_HISTORY)).is_err() {
+    let save_path = Path::new(EDITOR_HISTORY);
+    if rl.history_mut().save(save_path).is_err() {
         println!("Failed to save history");
     } else {
-        println!("editory history saved to {}", EDITOR_HISTORY);
+        println!("editor history saved to {}", save_path.display());
     }
     
     process::exit(0);

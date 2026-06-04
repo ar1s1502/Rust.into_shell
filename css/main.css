@@ -5,3 +5,12 @@ textarea{
     field-sizing: content;
 }
 
+
+.ibm-plex-sans-cli {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-optical-sizing: auto;
+  font-weight: normal;
+  font-style: normal;
+  font-size: 14px;
+}
+

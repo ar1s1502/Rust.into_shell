@@ -5,9 +5,10 @@ use std::collections::VecDeque;
 pub struct LexerState { //re-initialize to new instance on every lex of cmd_buf
     //for heredocs
     pub delimiters: VecDeque<String>,
+    pub heredocs: Vec<(usize, usize)>, //(doc_start, doc_end)
 
-    pub expected_closer: Option<String>,
     pub syntax_err: Option<String>,
+    pub expected_closer: Option<String>,
     pub continuation_for: Option<String>, //if cmd ends with &&, ||, |, or \, need to prompt user
 }
 
@@ -15,8 +16,9 @@ impl LexerState {
     pub fn new() -> Self {
         Self {
             delimiters: VecDeque::new(),
-            expected_closer: None,
+            heredocs: Vec::new(),
             syntax_err: None,
+            expected_closer: None,
             continuation_for: None,
         }
     }
@@ -62,7 +64,7 @@ pub enum Tkn {
     Quote(String),
 
     #[token("\n", newline_handler)]
-    Newline((VecDeque<String>, String)), //(Vec of heredocs, extra commands) if any
+    Newline,
 }
 
 /*
@@ -92,21 +94,18 @@ fn redirect_callback(lex: &mut Lexer<Tkn>) -> bool {
 }
 
 //handles |, ||, &&, and \
-fn operator_callback(lex: &mut Lexer<Tkn>) -> bool {
+fn operator_callback(lex: &mut Lexer<Tkn>) -> Option<()> {
     let mut delim_lex = lex.clone().morph::<TargetDelim>();
     let operator = delim_lex.slice();
-    let mut success = false;
     //look ahead to see if the next token is a valid heredoc delimiter
     //does not advance lex iterator. i.e. if delim_lex finds valid delimiter,
     //it will be consumed as a Tkn::Word in the next lext.next() call
     match delim_lex.next() {
         Some(Ok(TargetDelim::Delim(_)) | Ok(TargetDelim::Quote(_))) => {
             delim_lex.extras.continuation_for = None;
-            success = true;
         },
         Some(Ok(TargetDelim::Newline)) => {
             delim_lex.extras.continuation_for = Some(operator.to_string());
-            success = true; //don't throw an error here because we want to prompt for continuation
         },
         _ => { //invalid input following operator, like another shell operator, (), etc.
             delim_lex.extras.syntax_err = Some(format!("parse error near {}", delim_lex.span().end));
@@ -115,7 +114,7 @@ fn operator_callback(lex: &mut Lexer<Tkn>) -> bool {
     }
 
     lex.extras = delim_lex.extras; //match LexerStates
-    success
+    Some(())
 }
 
 fn heredoc_callback(lex: &mut Lexer<Tkn>) -> bool {
@@ -139,13 +138,14 @@ fn heredoc_callback(lex: &mut Lexer<Tkn>) -> bool {
 }
 
 //returns a VecDeque of heredocs (if any) to be handed to the parser
-fn newline_handler(lex: &mut Lexer<Tkn>) -> Option<(VecDeque<String>, String)> {
+fn newline_handler(lex: &mut Lexer<Tkn>) -> Option<()> {
+    let mut heredoc_start = lex.span().end; //heredoc (if any) starts right after the newline
+    let mut heredoc_end = lex.span().end;
     let mut heredoc_lex = lex.clone().morph::<HeredocTkn>();
-    let mut heredocs = VecDeque::new();
 
     while let Some(delim) = heredoc_lex.extras.delimiters.pop_front() {
         let mut closed = false;
-        let mut heredoc_content = String::new();
+        //let mut heredoc_content = String::new();
         while let Some(res) = heredoc_lex.next() {
             match res {
                 Ok(HeredocTkn::HeredocLine) => {
@@ -154,13 +154,16 @@ fn newline_handler(lex: &mut Lexer<Tkn>) -> Option<(VecDeque<String>, String)> {
                         closed = true;
                         break;
                     }
-                    heredoc_content.push_str(&line);
+                    heredoc_end += line.len();
+                    //heredoc_content.push_str(&line);
                 },
                 Err(e) => panic!("ERR: {:?}", e),
             }
         }
         if closed {
-            heredocs.push_back(heredoc_content);
+            heredoc_lex.extras.heredocs.push((heredoc_start, heredoc_end));
+            heredoc_start = heredoc_end;
+            //heredoc_lex.extras.heredocs.push(heredoc_content);
         } else { //we have to poll for more input from shell
             heredoc_lex.extras.expected_closer = Some(delim);
             *lex = heredoc_lex.morph();
@@ -168,34 +171,38 @@ fn newline_handler(lex: &mut Lexer<Tkn>) -> Option<(VecDeque<String>, String)> {
         }
     }
 
-    *lex = heredoc_lex.morph();
+    //set the span of Tkn lexer to match the whole quoted string content
+    let num_read_bytes = lex.remainder().len() - heredoc_lex.remainder().len();
+    lex.bump(num_read_bytes); 
+
+    lex.extras = heredoc_lex.extras;
+    Some(())
     
-    let mut cmd_continuation = String::new(); //handles any more commands inputted on on a separate line
-    if lex.extras.continuation_for.is_some() {
-        while let Some(res) = lex.next() {
-            match res {
-                //recursively search for more commands
-                //newline_handler is called again if Tkn::NewLine found
-                Ok(Tkn::Newline((_, cmds))) => {
-                    cmd_continuation.push_str(lex.slice());
-                    cmd_continuation.push_str(&cmds);
-                    break;
-                },
-                Ok(Tkn::Word | Tkn::Quote(_)) => {
-                    lex.extras.continuation_for = None;
-                    cmd_continuation.push_str(lex.slice());
-                }
-                Ok(_) => cmd_continuation.push_str(lex.slice()),
-                Err(_) => cmd_continuation.push_str(lex.slice()),
-            }
-        }
-    }
-    if lex.extras.continuation_for.is_some() { 
-        //we didn't find valid commands following the operator
-        return None; 
-    }
-    //ready to pass to parser
-    Some((heredocs, cmd_continuation))
+    //let mut cmd_continuation = String::new(); //handles any more commands inputted on on a separate line
+    //if lex.extras.continuation_for.is_some() {
+    //    while let Some(res) = lex.next() {
+    //        match res {
+    //            //recursively search for more commands
+    //            //newline_handler is called again if Tkn::NewLine found
+    //            Ok(Tkn::Newline((_, cmds))) => {
+    //                cmd_continuation.push_str(lex.slice());
+    //                cmd_continuation.push_str(&cmds);
+    //                break;
+    //            },
+    //            Ok(Tkn::Word | Tkn::Quote(_)) => {
+    //                lex.extras.continuation_for = None;
+    //                cmd_continuation.push_str(lex.slice());
+    //            }
+    //            Ok(_) => cmd_continuation.push_str(lex.slice()),
+    //            Err(_) => cmd_continuation.push_str(lex.slice()),
+    //        }
+    //    }
+    //}
+    //if lex.extras.continuation_for.is_some() { 
+    //    //we didn't find valid commands following the operator
+    //    return None; 
+    //}
+
 }
 
 #[derive(Logos, Debug, PartialEq, Clone)]
