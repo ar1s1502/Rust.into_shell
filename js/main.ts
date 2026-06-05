@@ -5,11 +5,18 @@ import { add_prompt_continuation, clear } from './cl.ts';
 //history: array of Strings, size N. add every input to the history at history[ptr % N], then N++
 
 
-/* SETUP */
+
+//OSC133 sequences
+//see https://contour-terminal.org/vt-extensions/osc-133-shell-integration/
 //must match with ../src/shell.rs OSC data const's
-const PROMPT_NORMAL = "A" as const;
-const PROMPT_CONTINUE = "E" as const;
-const PROMPT_MISSING = "F" as const;
+const PROMPT_START = "A" as const;
+const PROMPT_CONTINUE = "pc" as const;
+const PROMPT_END = "B" as const;
+const CMD_OUTPUT_START = "C" as const;
+const CMD_END = "D" as const;
+const SYN_ERR = "syn_err" as const;
+
+let SHELL_MODE: "A" | "B" | "C" | "D";
 
 const term = new Terminal({
     rows: 30,
@@ -18,37 +25,63 @@ const term = new Terminal({
 });
 term.open(document.getElementById('xterm') as HTMLDivElement);
 
+
+let stream_buf = new Uint8Array(0);
 const decoder = new TextDecoder('utf-8');
-const OSC133_REGEX = /\x1b]133;([^\x07]+)\x07/;
 const pty_channel = new Channel<Uint8Array>();
 pty_channel.onmessage = (msg_) => {
     //rust_shell will send OSC133 sequences to indicate some shell state
-    const msg = decoder.decode(new Uint8Array(msg_));
-    const result = msg.match(OSC133_REGEX);
-    if (result) {
-        console.log(`result: ${result}`);
-        const data = result[1].split(";"); //split capture group (OSC sequence data) by ;
-        console.log(`data: ${data}`);
-        switch (data[0]) {
-            case PROMPT_NORMAL:
-                //ignore regular prompts because they're handled by the cl textarea
-                return;
-            case PROMPT_CONTINUE:
-                add_prompt_continuation(data[1]);
-                return;
-            case PROMPT_MISSING:
-                console.log("missing prompt!")
-                add_prompt_continuation(data[1]);
-                return;
-            default:
-                //unrecognized OSC sequence, error
-                return;
-        }
-    }
+    //format: \x1b]133;${data}\x07
 
-    //if not an OSC133 sequence, then must be regular data
-    //display to xterm
-    term.write(msg);
+    //merge chunk of bytes with stream buffer
+    let bytes = new Uint8Array(msg_);
+    let extended = new Uint8Array(stream_buf.length + bytes.length);
+    extended.set(stream_buf, 0);
+    extended.set(bytes, stream_buf.length);
+    stream_buf = extended;
+
+    //find the start of the OSC133 sequence (\x1b]), if any
+    let seq_start = 0;
+    while (seq_start < stream_buf.length) {
+        if (stream_buf[seq_start] === 0x1b) {
+            if (seq_start + 1 >= stream_buf.length) {
+                break; //out of bytes, therefore osc seq is cut off
+            }
+            if (stream_buf[seq_start + 1] !== 0x5D) {
+                seq_start++;
+                continue; //not an osc sequence, treat as normal bytes for xterm
+            }
+
+            let seq_end = -1;
+            for (let i = seq_start + 2; i < stream_buf.length; i++) {
+                if (stream_buf[i] === 0x07) {
+                    seq_end = i;
+                    break;
+                }
+            }  
+            if (seq_end !== -1) {
+                //found complete osc sequence
+                //output any data before the osc seq
+                handle_output(stream_buf.subarray(0, seq_start));
+                //set shell mode
+                const data = decoder.decode(stream_buf.subarray(seq_start + 2, seq_end)); // 133;${codes}
+                parse_osc_data(data);
+
+                stream_buf = stream_buf.subarray(seq_end + 1);
+                seq_start = 0;
+                continue;
+            } else { //osc seq was cut off
+                break; //wait for next onmessage event
+            }
+            
+        }
+        seq_start++;
+    }
+    if (seq_start === stream_buf.length && stream_buf.length > 0) {
+        //no osc sequence in remaining bytes
+        handle_output(stream_buf);
+        stream_buf = new Uint8Array(0);
+    }
 };
 
 await invoke('pty_read', {
@@ -56,20 +89,14 @@ await invoke('pty_read', {
 }).then(() => {
     console.log("pty_read pipe setup success")
 });
-    //TODO CATCH ERROR;
-/* END SETUP */
 
 /* Submit to PTY logic */
-function writeToPty(input: string) {
-    invoke('pty_write', {
-        cliInput: input
-    });//TODO: catch errors
-}
-
 const input = document.getElementById("cl") as HTMLTextAreaElement;
 let suggestions = document.getElementById("suggestions") as HTMLUListElement;
+input.addEventListener('keydown', submit_listener);
+/* END SETUP */
 
-input.addEventListener('keydown', (event) => {
+function submit_listener(event: KeyboardEvent) {
     if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault(); //stops the newline from being added after this block finishes execution
 
@@ -82,5 +109,63 @@ input.addEventListener('keydown', (event) => {
         input.value = "";
         clear(suggestions);
     }
-});
+}
+
+function writeToPty(input: string) {
+    invoke('pty_write', {
+        cliInput: input
+    });//TODO: catch errors
+}
+
+function parse_osc_data(data: string) {
+    if (data.length === 0 || !data.startsWith('133')) { return; }
+    let data_arr = data.split(';');
+    switch (data_arr[1]) {
+        case PROMPT_START:
+            if (SHELL_MODE !== PROMPT_END && SHELL_MODE !== CMD_END) {
+                console.log("ERR: invalid shell state transition");
+                return;
+            }
+            SHELL_MODE = PROMPT_START;
+            if (data_arr[2] === PROMPT_CONTINUE) {
+                if (data_arr.length >= 4) {
+                    add_prompt_continuation(data_arr[3]);
+                } else {
+                    console.log("ERR: invalid prompt continuation format")
+                }
+            }
+            break;
+        case CMD_OUTPUT_START:
+            if (SHELL_MODE !== PROMPT_END && SHELL_MODE !== CMD_END) {
+                console.log("ERR: invalid shell state transition");
+                return;
+            }
+            SHELL_MODE = CMD_OUTPUT_START;
+            break;
+        case PROMPT_END:
+            if (SHELL_MODE !== PROMPT_START) {
+                console.log("ERR: invalid shell state transition");
+                return;
+            }
+            SHELL_MODE = PROMPT_END;
+            break;
+        case CMD_END:
+            if (SHELL_MODE !== CMD_OUTPUT_START) {
+                console.log("ERR: invalid shell state transition");
+                return;
+            }
+            SHELL_MODE = CMD_END;
+            break;
+        default:
+            console.log("ERR: not a valid osc 133 sequence");
+    }
+}
+
+function handle_output(output: Uint8Array) {
+    if (output.length === 0) { return; }
+    if (SHELL_MODE === CMD_OUTPUT_START) {
+        //display to xterm
+        term.write(output);
+    }
+}
 

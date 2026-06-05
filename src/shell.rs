@@ -22,8 +22,11 @@ OSC 133 syntax: \x1b]133;${data}\x07
 see https://contour-terminal.org/vt-extensions/osc-133-shell-integration/ 
 */
 const PROMPT_START: &str = "A";
+//custom OSC data key PROMPT_CONTINUE for PROMPT_START
+const PROMPT_CONTINUE: &str = "pc";
+
 const PROMPT_END: &str = "B";
-const CMD_START: &str = "C";
+const CMD_OUTPUT_START: &str = "C";
 const CMD_END: &str = "D";
 
 struct ChildPr { //a child process spawned by shell
@@ -106,7 +109,7 @@ fn handle_cmd(cmd: &str, heredocs: &mut VecDeque<String>) {
     if progs.len() == 1 {
         if progs[0].trim().is_empty() { return; }
         match parse_program(progs[0], heredocs) {
-            Ok(mut child_pr) =>{
+            Ok(mut child_pr) => {
                 match child_pr.prog_name.as_str() {
                     "?" => println!("help:"),
                     "pwd" => println!("{}", env::current_dir().unwrap().display()),
@@ -118,7 +121,7 @@ fn handle_cmd(cmd: &str, heredocs: &mut VecDeque<String>) {
                         Ok(_) => (),
                         Err(e) => println!("ERR: {}", e),
                     },
-                }
+                };
             },
             Err(e) => println!("ERR: {}", e),
         }
@@ -171,7 +174,6 @@ fn handle_cmd(cmd: &str, heredocs: &mut VecDeque<String>) {
             }
         });
     }
-
 }
 
 //Parser
@@ -284,14 +286,15 @@ fn lex_cmd_buf(lex: &mut Lexer<Tkn>, cmd_buf: &str) -> Option<(String, VecDeque<
             Ok(_) =>  {
                 print!("tkn: {}; ", lex.slice());
             },
-            Err(_) => return None,
+            Err(_) => {
+                print!("\n");
+                return None;
+            }
         }
     }
     let mut cmd = String::new();
     //push each cmd line into cmd
     for (l_start, l_end) in cmd_lines {
-        let line = &cmd_buf[l_start..l_end];
-        println!("cmd_line: {}", line);
         cmd.push_str(&cmd_buf[l_start..l_end]);
     }
     if let Some(end_tkn) = cmd.split_whitespace().last() {
@@ -301,7 +304,6 @@ fn lex_cmd_buf(lex: &mut Lexer<Tkn>, cmd_buf: &str) -> Option<(String, VecDeque<
     let mut heredocs = VecDeque::with_capacity(lex.extras.heredocs.len());
     for (doc_start, doc_end) in lex.extras.heredocs.iter() {
         let heredoc = &cmd_buf[*doc_start..*doc_end];
-        println!("heredoc: {}", heredoc);
         heredocs.push_back(String::from(heredoc));
     }
     Some((cmd, heredocs))
@@ -309,6 +311,7 @@ fn lex_cmd_buf(lex: &mut Lexer<Tkn>, cmd_buf: &str) -> Option<(String, VecDeque<
 }
 
 fn main() -> rustyline::Result<()> {
+    send_osc133(CMD_OUTPUT_START);
     let mut rl = DefaultEditor::new()?;
     if rl.history_mut().load(Path::new(EDITOR_HISTORY)).is_err() {
         println!("Failed to load shell command history");
@@ -316,10 +319,10 @@ fn main() -> rustyline::Result<()> {
     let mut cmd_buf = String::new();
     let mut line_num = 0;
     let mut prompt = String::new();
+    send_osc133(CMD_END);
     set_normal_prompt(&mut prompt, &mut line_num);
 
     loop {
-        send_osc133(PROMPT_START);
         match rl.readline(&prompt) {
             Ok(input) => {
                 send_osc133(PROMPT_END);
@@ -329,10 +332,11 @@ fn main() -> rustyline::Result<()> {
                 cmd_buf.push('\n'); //add back newline that readline stripped after user hit Enter
                 let lex_state = LexerState::new();
                 let mut lex = Tkn::lexer_with_extras(&cmd_buf, lex_state);
-                send_osc133(CMD_START); //signal to frontend that output has started
                 match lex_cmd_buf(&mut lex, &cmd_buf) {
                     Some((cmd, mut heredocs)) => {
-                        handle_cmd(&cmd, &mut heredocs);
+                        send_osc133(CMD_OUTPUT_START); //signal to frontend that output has started
+                        handle_cmd(&cmd, &mut heredocs); //will wait for child processes
+                        send_osc133(CMD_END);
                         set_normal_prompt(&mut prompt, &mut line_num);
                         let _ = rl.add_history_entry(cmd_buf.trim());
                         cmd_buf.clear();
@@ -340,7 +344,9 @@ fn main() -> rustyline::Result<()> {
                     None => {
                         if let Some(err) = lex.extras.syntax_err {
                             //syntax errs get highest priority b/c they're unrecoverable
+                            send_osc133(CMD_OUTPUT_START);
                             println!("Syntax ERR: {}", err);
+                            send_osc133(CMD_END);
                             set_normal_prompt(&mut prompt, &mut line_num);
                             let _  = rl.add_history_entry(cmd_buf.trim());
                             cmd_buf.clear();
@@ -351,7 +357,6 @@ fn main() -> rustyline::Result<()> {
                         }
                     }
                 }
-                send_osc133(CMD_END);
             },
             Err(ReadlineError::Interrupted) => {
                 send_osc133(PROMPT_END);
@@ -377,6 +382,7 @@ fn set_normal_prompt(prompt: &mut String, line_num: &mut usize) {
     *line_num += 1;
     let cwd = env::current_dir().unwrap().file_name().unwrap().to_str().unwrap().to_string();
     *prompt = format!("{}: {} % ", line_num, cwd);
+    send_osc133(PROMPT_START);
 }
 
 //handles cmd lines that end with \, &&, |, ||
@@ -388,6 +394,7 @@ fn set_needs_continuation_prompt(prompt: &mut String, op: &str) {
         "|" => *prompt = String::from("pipe> "),
         _ => *prompt = String::from("> "),
     }
+    send_osc133(&format!("{};{};{}", PROMPT_START, PROMPT_CONTINUE, prompt));
 }
 
 //handles unclosed quoted strings, heredocs with no closing delimiters
@@ -398,11 +405,8 @@ fn set_expected_closer_prompt(prompt: &mut String, closer: &str) {
         "\"" => *prompt = String::from("dquote> "),
         _ => *prompt = format!("missing {} for heredoc> ", closer),
     }
+    send_osc133(&format!("{};{};{}", PROMPT_START, PROMPT_CONTINUE, prompt));
 } 
-
-fn format_osc133(data: &str, output: &str) -> String {
-    format!("\x1b]133;{}\x07{}\x1b]133;{}\x07", data, output, PROMPT_END)
-}
 
 fn send_osc133(data: &str) {
     print!("\x1b]133;{}\x07", data);
