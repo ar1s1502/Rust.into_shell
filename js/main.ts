@@ -1,6 +1,6 @@
 import { Terminal } from '@xterm/xterm';
 import { invoke, Channel } from '@tauri-apps/api/core';
-import { add_prompt_continuation, clear } from './cl.ts';
+import { add_prompt_continuation, clear, get_cur_cmd, reset_cl } from './cl.ts';
 
 //history: array of Strings, size N. add every input to the history at history[ptr % N], then N++
 
@@ -16,7 +16,7 @@ const CMD_OUTPUT_START = "C" as const;
 const CMD_END = "D" as const;
 const SYN_ERR = "syn_err" as const;
 
-let SHELL_MODE: "A" | "B" | "C" | "D";
+let SHELL_MODE: "A" | "B" | "C" | "D" = CMD_END;
 
 const term = new Terminal({
     rows: 30,
@@ -89,43 +89,13 @@ await invoke('pty_read', {
 }).then(() => {
     console.log("pty_read pipe setup success")
 });
-
-/* Submit to PTY logic */
-const input = document.getElementById("cl") as HTMLTextAreaElement;
-let suggestions = document.getElementById("suggestions") as HTMLUListElement;
-input.addEventListener('keydown', submit_listener);
 /* END SETUP */
-
-function submit_listener(event: KeyboardEvent) {
-    if (event.key === "Enter" && !event.shiftKey) {
-        event.preventDefault(); //stops the newline from being added after this block finishes execution
-
-        const payload = input.value + "\n";
-        console.log(`submitting ${payload}`);
-        writeToPty(payload);
-
-        //TODO add input.value.trim() to history
-
-        input.value = "";
-        clear(suggestions);
-    }
-}
-
-function writeToPty(input: string) {
-    invoke('pty_write', {
-        cliInput: input
-    });//TODO: catch errors
-}
 
 function parse_osc_data(data: string) {
     if (data.length === 0 || !data.startsWith('133')) { return; }
     let data_arr = data.split(';');
     switch (data_arr[1]) {
         case PROMPT_START:
-            if (SHELL_MODE !== PROMPT_END && SHELL_MODE !== CMD_END) {
-                console.log("ERR: invalid shell state transition");
-                return;
-            }
             SHELL_MODE = PROMPT_START;
             if (data_arr[2] === PROMPT_CONTINUE) {
                 if (data_arr.length >= 4) {
@@ -148,6 +118,13 @@ function parse_osc_data(data: string) {
                 return;
             }
             SHELL_MODE = PROMPT_END;
+
+            const cmd = get_cur_cmd().trim();
+            term.writeln(`output for ${cmd}:`);
+            //TODO: add prompt to history
+
+            reset_cl();
+
             break;
         case CMD_END:
             if (SHELL_MODE !== CMD_OUTPUT_START) {
@@ -164,6 +141,7 @@ function parse_osc_data(data: string) {
 function handle_output(output: Uint8Array) {
     if (output.length === 0) { return; }
     if (SHELL_MODE === CMD_OUTPUT_START) {
+        console.log("output: " + decoder.decode(output));
         //display to xterm
         term.write(output);
     }

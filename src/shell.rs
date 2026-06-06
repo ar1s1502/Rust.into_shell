@@ -325,7 +325,6 @@ fn main() -> rustyline::Result<()> {
     loop {
         match rl.readline(&prompt) {
             Ok(input) => {
-                send_osc133(PROMPT_END);
                 if input.is_empty() {continue;}
                 if input.trim().to_lowercase() == "exit" { exit_shell(&mut rl); };
                 cmd_buf.push_str(&input);
@@ -334,6 +333,7 @@ fn main() -> rustyline::Result<()> {
                 let mut lex = Tkn::lexer_with_extras(&cmd_buf, lex_state);
                 match lex_cmd_buf(&mut lex, &cmd_buf) {
                     Some((cmd, mut heredocs)) => {
+                        send_osc133(PROMPT_END);
                         send_osc133(CMD_OUTPUT_START); //signal to frontend that output has started
                         handle_cmd(&cmd, &mut heredocs); //will wait for child processes
                         send_osc133(CMD_END);
@@ -343,6 +343,7 @@ fn main() -> rustyline::Result<()> {
                     },
                     None => {
                         if let Some(err) = lex.extras.syntax_err {
+                            send_osc133(PROMPT_END);
                             //syntax errs get highest priority b/c they're unrecoverable
                             send_osc133(CMD_OUTPUT_START);
                             println!("Syntax ERR: {}", err);

@@ -177,32 +177,6 @@ fn newline_handler(lex: &mut Lexer<Tkn>) -> Option<()> {
 
     lex.extras = heredoc_lex.extras;
     Some(())
-    
-    //let mut cmd_continuation = String::new(); //handles any more commands inputted on on a separate line
-    //if lex.extras.continuation_for.is_some() {
-    //    while let Some(res) = lex.next() {
-    //        match res {
-    //            //recursively search for more commands
-    //            //newline_handler is called again if Tkn::NewLine found
-    //            Ok(Tkn::Newline((_, cmds))) => {
-    //                cmd_continuation.push_str(lex.slice());
-    //                cmd_continuation.push_str(&cmds);
-    //                break;
-    //            },
-    //            Ok(Tkn::Word | Tkn::Quote(_)) => {
-    //                lex.extras.continuation_for = None;
-    //                cmd_continuation.push_str(lex.slice());
-    //            }
-    //            Ok(_) => cmd_continuation.push_str(lex.slice()),
-    //            Err(_) => cmd_continuation.push_str(lex.slice()),
-    //        }
-    //    }
-    //}
-    //if lex.extras.continuation_for.is_some() { 
-    //    //we didn't find valid commands following the operator
-    //    return None; 
-    //}
-
 }
 
 #[derive(Logos, Debug, PartialEq, Clone)]
