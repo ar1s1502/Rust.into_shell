@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-textarea{
+#cl {
     width: 100%;
     field-sizing: content;
 }

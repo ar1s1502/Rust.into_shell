@@ -14,7 +14,7 @@ use std::collections::VecDeque;
 use shellwords::{split};
 use anyhow::anyhow;
 
-const EDITOR_HISTORY: &str = "./shell_cmd_history.txt";
+const CMD_HISTORY: &str = "rust_shell_history.txt"; 
 
 /* 
 OSC Escape sequence's data so that frontend typescript can differentiate between shell outputs
@@ -23,8 +23,6 @@ see https://contour-terminal.org/vt-extensions/osc-133-shell-integration/
 */
 const PROMPT_START: &str = "A";
 //custom OSC data key PROMPT_CONTINUE for PROMPT_START
-const PROMPT_CONTINUE: &str = "pc";
-
 const PROMPT_END: &str = "B";
 const CMD_OUTPUT_START: &str = "C";
 const CMD_END: &str = "D";
@@ -313,8 +311,8 @@ fn lex_cmd_buf(lex: &mut Lexer<Tkn>, cmd_buf: &str) -> Option<(String, VecDeque<
 fn main() -> rustyline::Result<()> {
     send_osc133(CMD_OUTPUT_START);
     let mut rl = DefaultEditor::new()?;
-    if rl.history_mut().load(Path::new(EDITOR_HISTORY)).is_err() {
-        println!("Failed to load shell command history");
+    if let Err(e) = load_history(&mut rl) {
+        println!("{}", e);
     }
     let mut cmd_buf = String::new();
     let mut line_num = 0;
@@ -334,7 +332,7 @@ fn main() -> rustyline::Result<()> {
                 match lex_cmd_buf(&mut lex, &cmd_buf) {
                     Some((cmd, mut heredocs)) => {
                         send_osc133(PROMPT_END);
-                        send_osc133(CMD_OUTPUT_START); //signal to frontend that output has started
+                        send_osc133(CMD_OUTPUT_START);
                         handle_cmd(&cmd, &mut heredocs); //will wait for child processes
                         send_osc133(CMD_END);
                         set_normal_prompt(&mut prompt, &mut line_num);
@@ -395,7 +393,7 @@ fn set_needs_continuation_prompt(prompt: &mut String, op: &str) {
         "|" => *prompt = String::from("pipe> "),
         _ => *prompt = String::from("> "),
     }
-    send_osc133(&format!("{};{};{}", PROMPT_START, PROMPT_CONTINUE, prompt));
+    send_osc133(&format!("{};{}", PROMPT_START, prompt));
 }
 
 //handles unclosed quoted strings, heredocs with no closing delimiters
@@ -406,7 +404,7 @@ fn set_expected_closer_prompt(prompt: &mut String, closer: &str) {
         "\"" => *prompt = String::from("dquote> "),
         _ => *prompt = format!("missing {} for heredoc> ", closer),
     }
-    send_osc133(&format!("{};{};{}", PROMPT_START, PROMPT_CONTINUE, prompt));
+    send_osc133(&format!("{};{}", PROMPT_START, prompt));
 } 
 
 fn send_osc133(data: &str) {
@@ -415,18 +413,42 @@ fn send_osc133(data: &str) {
     let _ = std::io::stdout().flush();
 }
 
+fn save_history(rl: &mut DefaultEditor) -> anyhow::Result<String> {
+    if let Some(path) = env::home_dir() {
+        let save_path = path.join(CMD_HISTORY);
+        if rl.history_mut().save(save_path.as_path()).is_err() {
+            return Err(anyhow!("Failed to save history"));
+        } else {
+            return Ok(format!("{}", save_path.display()));
+        }
+    } else { 
+        return Err(anyhow!("Failed to save history"));
+    }
+}
+
+fn load_history(rl: &mut DefaultEditor) -> anyhow::Result<()> {
+    if let Some(path) = env::home_dir() {
+        let save_path = path.join(CMD_HISTORY);
+        if rl.history_mut().load(save_path.as_path()).is_err() {
+            return Err(anyhow!("Failed to load history"));
+        } else {
+            return Ok(());
+        }
+    } else { 
+        return Err(anyhow!("Failed to load history"));
+    }
+}
+
 fn exit_shell(rl: &mut DefaultEditor) {
     //for i in 0..rl.history().len() {
     //    let entry = rl.history().get(i, SearchDirection::Forward).unwrap().unwrap().entry;
     //    println!("{}: {}", i, entry);
     //}
+    send_osc133(CMD_OUTPUT_START);
     println!("exiting shell...");
-    let save_path = Path::new(EDITOR_HISTORY);
-    if rl.history_mut().save(save_path).is_err() {
-        println!("Failed to save history");
-    } else {
-        println!("editor history saved to {}", save_path.display());
+    match save_history(rl) {
+        Ok(save_path) => println!("shell command history saved to {}", save_path),
+        Err(e) => println!("ERR: {}", e),
     }
-    
     process::exit(0);
 }
