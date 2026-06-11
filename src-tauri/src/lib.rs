@@ -71,6 +71,7 @@ impl vte::Perform for PtyParser<'_> {
             println!("shell state: {:?}", self.shell_state);
         } 
     }
+
     //got full csi seq (e.g. enter fullscreen)
     fn csi_dispatch(
             &mut self,
@@ -79,8 +80,20 @@ impl vte::Perform for PtyParser<'_> {
             _ignore: bool,
             _action: char,
         ) {
-        //println!("[csi dispatch] params: {:?}, intermed: {:?}, action: {:?}", _params, _intermediates, _action);
+        let mut params = _params.into_iter();
+        if let Some(param) = params.next() {
+            if param[0] == 1049 as u16 && _intermediates == b"?"  {
+                if _action == 'h' {
+                    println!("ENTER FULLSCREEN");
+                    let _ = self.app.emit("enter_fullscreen", ());
+                } else if _action == 'l' {
+                    println!("LEAVE FULLSCREEN");
+                    let _ = self.app.emit("exit_fullscreen", ());
+                }
+            } 
+        }
     }
+
 
 }
 
@@ -114,6 +127,7 @@ fn get_editor_hist() -> Option<Vec<String>> { //returning None here is still a r
                     let _ = line_iter.next(); //skip the header
                     let mut hist = Vec::with_capacity(line_iter.size_hint().0);
                     while let Some(line) = line_iter.next() {
+                        if line.is_empty() { continue; } 
                         hist.push(line.replace("\\n", "\n"));
                     }
                     Some(hist)
@@ -159,7 +173,7 @@ fn pty_read(app_handle: tauri::AppHandle, pty_: State<'_, PtyState>, pty_channel
                     //send along channel
                     //channel must have owned data, not reference to data, else compiler complains
                     if !pty_parser.output.is_empty() {
-                        println!("pty_parser.output: {:?}", std::str::from_utf8(&pty_parser.output).unwrap());
+                        // println!("pty_parser.output: {:?}", std::str::from_utf8(&pty_parser.output).unwrap());
                         let _ = pty_channel.send(pty_parser.output);
                         pty_parser.output = Vec::new();
                     }

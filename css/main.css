@@ -1,15 +1,12 @@
 @import "tailwindcss";
 
+p {
+    white-space: pre-wrap;
+}
+
 #cl {
     width: 100%;
     field-sizing: content;
-}
-
-.unselectable {
-  -webkit-user-select: none; /* Safari */
-  -moz-user-select: none;    /* Older Firefox versions */
-  -ms-user-select: none;     /* Internet Explorer/Edge */
-  user-select: none;         /* Standard syntax */
 }
 
 .ibm-plex-sans-cli {

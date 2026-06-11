@@ -1,8 +1,16 @@
-import { invoke, } from '@tauri-apps/api/core';
-import { fuzzy_search } from './history';
+// import { invoke, } from '@tauri-apps/api/core';
+import { fuzzy_search, history } from './history';
+import { writeToPty } from './main';
 
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
+
+const cmd_line = document.getElementById("cl") as HTMLTextAreaElement;
+let active_input: HTMLTextAreaElement = cmd_line;
+make_active(cmd_line);
+const suggestions = document.getElementById("suggestions") as HTMLUListElement;
+let cur_cmd = ""; //the current user input command (from all the input textareas)
+let hist_ul = document.getElementById('history_ul') as HTMLUListElement;
 
 /* Utilities */
 export function clear(ele: HTMLElement) {
@@ -39,19 +47,28 @@ export function get_cur_cmd() {
     return cur_cmd;
 }
 
-export function reset_cl() {
+export function reset_cl(cmd_line_val: string) {
     cur_cmd = "";
-    cmd_line.value = "";
+    cmd_line.value = cmd_line_val;
+    cmd_line.rows = 1 + (cmd_line_val.match(/\n/g) || []).length;
     make_active(cmd_line);
     clear(continuation_prompts);
 }
-/* *** */
 
-const cmd_line = document.getElementById("cl") as HTMLTextAreaElement;
-let active_input: HTMLTextAreaElement = cmd_line;
-const suggestions = document.getElementById("suggestions") as HTMLUListElement;
-let cur_cmd = ""; //the current user input command (from all the input textareas)
-make_active(cmd_line);
+export function add_hist_li(entry: string) {
+    const p = document.createElement('p');
+    p.textContent = entry;
+    p.classList.add('text-gray-500', 'rounded', 'outline-none', 'border-2', 
+        'border-transparent', 'hover:border-slate-500', 'transition-colors');
+
+    const li = document.createElement('li');
+    li.appendChild(p);
+    li.onclick = ()=> {
+        reset_cl(entry);
+    }
+    hist_ul.appendChild(li);
+}
+/* *** */
 
 function searchbar_handler() {
     // Check if the current OS webview engine supports the modern CSS
@@ -65,26 +82,21 @@ function searchbar_handler() {
     let matches = fuzzy_search(active_input.value);
     if (matches) display(suggestions); else return;
     for (const match of matches) {
+        const p = document.createElement('p');
+        p.textContent = match.item;
         const li = document.createElement('li');
-        li.textContent = match.item;
+        li.appendChild(p);
         li.onclick = ()=> {
             active_input.value = match.item;
-            cur_cmd = "";
             active_input.rows = 1 + (match.item.match(/\n/g) || []).length;
             clear(suggestions);
             active_input.focus();
         }
-        li?.classList.add("px-1", "py-0", "m-1", "cursor-pointer", "hover:text-white", "hover:bg-gray-800", "transition-colors");
+        li.classList.add("px-1", "py-0", "m-1", "cursor-pointer", "hover:text-white", "hover:bg-gray-800", "transition-colors");
         suggestions.appendChild(li);
     }
     // resize the textarea to accommodate any new lines
     active_input.rows = 1 + (active_input.value.match(/\n/g) || []).length;
-}
-
-function writeToPty(input: string) {
-    invoke('pty_write', {
-        cliInput: input
-    });//TODO: catch errors
 }
 
 function submit_listener(event: KeyboardEvent) {
@@ -109,14 +121,22 @@ function interrupt_listener(event: KeyboardEvent) {
     if (event.ctrlKey) {
         const keypress = event.key.toLowerCase();
         if (keypress === 'c') {
-            reset_cl();
+            reset_cl("");
             writeToPty("\x03");
         } else if (keypress === 'd') {
-            reset_cl();
+            reset_cl("");
             writeToPty("\x04");
         }
     }
 }
+
+// function history_listener(event: KeyboardEvent) {
+//     if (event.key === "ArrowDown") { 
+//         writeToPty("\x1b[B");
+//     } else if (event.key === "ArrowUp") {
+//         writeToPty("\x1b[A");
+//     }
+// } 
 
 function paste_listener(event: ClipboardEvent) {
     if (event.clipboardData) {
