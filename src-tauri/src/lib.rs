@@ -15,6 +15,15 @@ const PROMPT_END: [u8; 1] = *b"B";
 const CMD_OUTPUT_START: [u8; 1] = *b"C";
 const CMD_END: [u8; 1] = *b"D";
 
+#[derive(Debug, thiserror::Error)]
+enum Error {
+    #[error("pty init error: {0}")]
+    Pty(#[from] anyhow::Error),
+
+    #[error("pty io error: {0}")]
+    PtyIO(#[from] std::io::Error),
+}
+
 struct Pty {
     writer: Box<dyn Write + Send>, //write handle to master pty, from take_writer()
     master: Box<dyn MasterPty + Send>, //master end of PtyPair
@@ -97,15 +106,6 @@ impl vte::Perform for PtyParser<'_> {
 
 }
 
-#[derive(Debug, thiserror::Error)]
-enum Error {
-    #[error("pty init error: {0}")]
-    Pty(#[from] anyhow::Error),
-
-    #[error("pty io error: {0}")]
-    PtyIO(#[from] std::io::Error),
-}
-
 // must manually implement serde::Serialize for Error enum
 impl serde::Serialize for Error {
   fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -186,6 +186,22 @@ fn pty_read(app_handle: tauri::AppHandle, pty_: State<'_, PtyState>, pty_channel
     Ok(())
 }
 
+#[tauri::command]
+fn resize_pty(pty_: State<'_, PtyState>, cols: u16, rows: u16) -> Result<(), Error> {
+    let pty = pty_.lock().unwrap();
+    println!("resizing");
+    pty.master.resize(PtySize {
+        cols, 
+        rows,
+        pixel_height: 0,
+        pixel_width: 0,
+    }).map_err(|e| {
+        println!("{:?}", e);
+        Error::Pty(anyhow!("{}", e))
+    })?;
+    Ok(())
+}
+
 fn init_shell() -> Result<Pty, Error> {
     let pty_pair = native_pty_system().openpty(PtySize {
         rows: 30,
@@ -226,7 +242,7 @@ pub fn run() {
             app.manage(ptystate);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![pty_write, pty_read, get_editor_hist])
+        .invoke_handler(tauri::generate_handler![pty_write, pty_read, get_editor_hist, resize_pty])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

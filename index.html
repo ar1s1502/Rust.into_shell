@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="node_modules/@xterm/xterm/css/xterm.css" />
     <script type="module" src="./js/cl.ts"></script>
     <script type="module" src="./js/main.ts"></script>
+    <script type="module" src="./js/history.ts"></script>
 
     <!-- font -->
      <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -16,35 +17,41 @@
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,100..700;1,100..700&display=swap" rel="stylesheet">
 
 </head>
-<body class="bg-gray-900 text-gray-200">
-    <div class="ibm-plex-sans-cli"> 
-        <ul id="history_ul" class="flex flex-col divide-y divide-gray-300 shadow-lg rounded-lg">
-            <li>
-            
-            </li>
-        </ul>
-    </div>
-    <div id="cli_div" class="flex flex-col relative ibm-plex-sans-cli">
-        <div class="relative">
-            <textarea id="cl" 
-            rows="1"
-            class="p-2 bg-gray-800 rounded outline-none border-2 border-transparent hover:border-slate-500 transition-colors"
-            spellcheck="false" 
-            autocorrect="off" 
-            autocapitalize="off" 
-            autocomplete="off"
-            data-gramm="false"
-            placeholder="Type a command..."></textarea>
-
-            <ul id="continuation_prompts" style="display: none;">
-            </ul>
+<body class="bg-gray-900 text-gray-200 m-0 p-0">
+    <div class="flex flex-col h-screen" id="layout_container">
+        <div class="h-1/2 overflow-y-auto" id="top_panel">
+            <div class="ibm-plex-sans-cli"> 
+                <ul id="history_ul" class="divide-y divide-gray-300 shadow-lg rounded-lg">
+                </ul>
+            </div>
         </div>
-        
-        <ul id="suggestions" 
-            class="absolute rounded-b z-10 px-1.5 bg-neutral-700 border-x border-b border-slate-400 top-full w-full"
-            style="display: none;">
-        </ul>
-    </div>
-    <div id="xterm"></div>
+        <div class="cursor-row-resize h-1 p-1 w-full bg-black hover:bg-slate-500 transition-colors" id="drag_bar">
+            <hr class="w-full">
+        </div>
+        <div class="flex flex-col flex-1 overflow-hidden" id="bottom_panel">
+            <div class="flex flex-col relative ibm-plex-sans-cli" id="cli_div">
+                <div class="relative">
+                    <textarea id="cl" 
+                    rows="1"
+                    class="p-2 bg-gray-800 rounded outline-none border-2 border-transparent hover:border-slate-500 transition-colors"
+                    spellcheck="false" 
+                    autocorrect="off" 
+                    autocapitalize="off" 
+                    autocomplete="off"
+                    data-gramm="false"
+                    placeholder="Type a command..."></textarea>
+
+                    <ul id="continuation_prompts" style="display: none;">
+                    </ul>
+                </div>
+                
+                <ul id="suggestions" 
+                    class="absolute rounded-b z-10 px-1.5 bg-neutral-700 border-x border-b border-slate-400 top-full w-full"
+                    style="display: none;">
+                </ul>
+            </div>
+            <div class="flex-1 min-h-0 overflow-hidden" id="xterm"></div>
+        </div>
+     </div>
 </body>
 </html>

@@ -1,5 +1,5 @@
 import { invoke, } from '@tauri-apps/api/core';
-import { add_hist_li } from './cl';
+import { add_hist_li } from './cl.ts';
 import Fuse from 'fuse.js' //tokenize by word + fuzzy search using bitap algo
 
 export let history: string[];
@@ -19,6 +19,10 @@ invoke('get_editor_hist').then((hist_) => {
     for (const entry of history) {
         add_hist_li(entry);
     }
+    requestAnimationFrame(() => { //wait for DOM to render before scrolling to bottom of history list
+        const hist_panel = document.getElementById('top_panel') as HTMLDivElement;
+        hist_panel.scrollTop = hist_panel.scrollHeight;
+    });
 });
 
 export function add_to_hist(cmd: string) {

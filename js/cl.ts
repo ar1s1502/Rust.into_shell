@@ -1,6 +1,5 @@
-// import { invoke, } from '@tauri-apps/api/core';
-import { fuzzy_search, history } from './history';
-import { writeToPty } from './main';
+import { invoke, } from '@tauri-apps/api/core';
+import { fuzzy_search, } from './history';
 
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
@@ -68,6 +67,14 @@ export function add_hist_li(entry: string) {
     }
     hist_ul.appendChild(li);
 }
+
+export async function writeToPty(input: string) {
+    await invoke('pty_write', {
+        cliInput: input
+    }).catch((err) => {
+        console.log(err);
+    });
+}
 /* *** */
 
 function searchbar_handler() {
@@ -104,14 +111,13 @@ function submit_listener(event: KeyboardEvent) {
         event.preventDefault(); //stops the newline from being added after this block finishes execution
 
         let input = (active_input.value).replaceAll(/\r/g, ""); //strip all carriage returns
+        cur_cmd += input + '\n';
         if (input.includes('\n')) {
             input = `${PASTE_START}${input}${PASTE_END}`; //must simulate bracketed paste, 
             // otherwise rustyline ignores everything after 1st newline char
         }
-        input += '\n';
-        cur_cmd += input;
         console.log(`submitting ${cur_cmd}`);
-        writeToPty(input);
+        writeToPty(input + '\n');
 
         clear(suggestions);
     }

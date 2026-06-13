@@ -4,7 +4,7 @@ use lexer::{Tkn, LexerState};
 use logos::{Logos, Lexer};
 use rustyline::{DefaultEditor};
 use rustyline::error::ReadlineError;
-use rustyline::history::{History,};
+use rustyline::history::{History, SearchDirection};
 use std::process::Stdio;
 use std::{env, process};
 use std::fs::{File, OpenOptions};
@@ -97,7 +97,7 @@ then for each child in children, wait on the child.
 automatically the console should have the stdout of the last prog
  * */
 
-fn handle_cmd(cmd: &str, heredocs: &mut VecDeque<String>) {
+fn handle_cmd(cmd: &str, heredocs: &mut VecDeque<String>, rl: &DefaultEditor) {
     let progs: Vec<&str> = cmd
         .split('|')
         .map(|prog| prog.trim())
@@ -109,7 +109,13 @@ fn handle_cmd(cmd: &str, heredocs: &mut VecDeque<String>) {
         match parse_program(progs[0], heredocs) {
             Ok(mut child_pr) => {
                 match child_pr.prog_name.as_str() {
-                    "?" => println!("help:"),
+                    "history" => {
+                        for i in 0..rl.history().len() {
+                               let entry = rl.history().get(i, SearchDirection::Forward)
+                                .unwrap().unwrap().entry;
+                               println!("{}: {}", i, entry);
+                            }
+                    },
                     "pwd" => println!("{}", env::current_dir().unwrap().display()),
                     "cd" => match split(progs[0]) {
                         Ok(args) => set_cwd(&args),
@@ -333,7 +339,7 @@ fn main() -> rustyline::Result<()> {
                     Some((cmd, mut heredocs)) => {
                         send_osc133(PROMPT_END);
                         send_osc133(CMD_OUTPUT_START);
-                        handle_cmd(&cmd, &mut heredocs); //will wait for child processes
+                        handle_cmd(&cmd, &mut heredocs, &rl); //will wait for child processes
                         send_osc133(CMD_END);
                         set_normal_prompt(&mut prompt, &mut line_num);
                         let _ = rl.add_history_entry(cmd_buf.trim());
@@ -440,10 +446,6 @@ fn load_history(rl: &mut DefaultEditor) -> anyhow::Result<()> {
 }
 
 fn exit_shell(rl: &mut DefaultEditor) {
-    //for i in 0..rl.history().len() {
-    //    let entry = rl.history().get(i, SearchDirection::Forward).unwrap().unwrap().entry;
-    //    println!("{}: {}", i, entry);
-    //}
     send_osc133(CMD_OUTPUT_START);
     println!("exiting shell...");
     match save_history(rl) {
