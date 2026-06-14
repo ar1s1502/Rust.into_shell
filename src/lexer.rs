@@ -1,11 +1,12 @@
-use logos::{Logos, Lexer, };
+use logos::{Logos, Lexer, SpannedIter };
 use std::collections::VecDeque;
+use std::ops::Range;
 
 #[derive(Debug, Clone)]
 pub struct LexerState { //re-initialize to new instance on every lex of cmd_buf
     //for heredocs
-    pub delimiters: VecDeque<String>,
-    pub heredocs: Vec<(usize, usize)>, //(doc_start, doc_end)
+    delimiters: VecDeque<String>,
+    heredocs: Vec<(usize, usize)>, //(doc_start, doc_end)
 
     pub syntax_err: Option<String>,
     pub expected_closer: Option<String>,
@@ -26,6 +27,7 @@ impl LexerState {
 
 #[derive(Logos, Debug, PartialEq, Clone)]
 #[logos(extras = LexerState)]
+#[logos(skip r#"[ \t\f]+"#)]
 pub enum Tkn {
     #[regex(r#"[^ `"'\\\t\f\n|&;<>(){}]+"#)]
     Word,
@@ -54,11 +56,11 @@ pub enum Tkn {
     #[token("||", operator_callback)]
     CmdOr,
 
+    #[token(";")]
+    Semicolon,
+
     #[token("&")]
     And,
-
-    #[regex(r#"[ \t\f]+"#)]
-    Whitespace,
 
     #[regex(r#"[`'"]"#, quote_handler)]
     Quote(String),
@@ -68,8 +70,8 @@ pub enum Tkn {
 }
 
 /*
- * NOTE: if a logos callback function returns a Option/Result and 
- * the callback None/Err is returned, then the lex.next() call that triggers the callback will be Some(Err(_))
+ * NOTE: if a logos callback function returns a Option/Result/bool and 
+ * the callback None/Err/false is returned, then the lex.next() call that triggers the callback will be Some(Err(_))
  */
 
 fn redirect_callback(lex: &mut Lexer<Tkn>) -> bool {
@@ -110,7 +112,6 @@ fn operator_callback(lex: &mut Lexer<Tkn>) -> Option<()> {
         _ => { //invalid input following operator, like another shell operator, (), etc.
             delim_lex.extras.syntax_err = Some(format!("parse error near {}", delim_lex.span().end));
         },
-
     }
 
     lex.extras = delim_lex.extras; //match LexerStates
@@ -258,3 +259,65 @@ where T: Logos<'a, Extras = LexerState, Source = str> + Clone {
     lex.extras = quote_lex.extras; //sync states
     if lex.extras.expected_closer.is_none() { Some(content) } else { None }
 }
+
+pub struct TknSpan {
+    pub kind: Tkn,
+    pub span: Range<usize>,
+}
+
+/* 
+ * Make a Vec<Vec<TknSpan>> instead, where each vec is a program and its necessary tkns? a program
+ * is delimited by a newline, |, ||, &&, or ;
+ * 
+ * Each program is a Vec<TknSpan>. the last TknSpan is the program delimiter (one of [\n, ;, etc.])
+ * When parsing, parse each program from first to last. upon encountering the delimiter, 
+ *      if newline or ;, do nothing. 
+ *      if pipe, execute pipe logic. Make the spawned Command pipe its I/O 
+ *      if ||, collect exit status and run next prog if this failed
+ *      if &&, collect exit status and run next prog if successful
+ * */
+
+
+pub fn lex_cmd_buf(span_iter: &mut SpannedIter<'_, Tkn>, cmd_buf: &str) -> Option<(Vec<TknSpan>, VecDeque<String>)> {
+    let mut tkns: Vec<TknSpan> = Vec::new();
+    //fresh borrow of span_iter so can get span_iter.extras later
+    for (res, span) in &mut *span_iter {
+        match res {
+            Ok(tkn) => {
+                match tkn {
+                    Tkn::Newline => println!(),
+                    Tkn::Quote(ref quote_content) => {
+                        print!("tkn: \"{}\"; ", quote_content);
+                    },
+                    _ => print!("tkn: {}; ", &cmd_buf[span.start..span.end]),
+                }
+                tkns.push(TknSpan {kind: tkn, span});
+            },
+            Err(_) => {
+                println!();
+                return None;
+            }
+        }
+    }
+    //check if 2nd to last tkn is an invalid operator (last is newline)
+    if let Some(tkn) = tkns.get(tkns.len()-2) { 
+        if [Tkn::Semicolon, Tkn::Pipe, Tkn::CmdOr, Tkn::CmdAnd, ].contains(&tkn.kind) {
+            return None;
+        }
+    }
+    let mut heredocs = VecDeque::with_capacity(span_iter.extras.heredocs.len());
+    for (doc_start, doc_end) in span_iter.extras.heredocs.iter() {
+        let heredoc = &cmd_buf[*doc_start..*doc_end];
+        heredocs.push_back(String::from(heredoc));
+    }
+    Some((tkns, heredocs))
+}
+
+pub fn get_token_at<'a>(tkn_span: &'a TknSpan, cmd_buf: &'a str) -> &'a str {
+    if let Tkn::Quote(ref quote_content) = tkn_span.kind {
+        return quote_content;
+    }
+    &cmd_buf[tkn_span.span.start..tkn_span.span.end]
+}
+
+

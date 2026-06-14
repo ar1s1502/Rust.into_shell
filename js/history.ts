@@ -2,7 +2,7 @@ import { invoke, } from '@tauri-apps/api/core';
 import { add_hist_li } from './cl.ts';
 import Fuse from 'fuse.js' //tokenize by word + fuzzy search using bitap algo
 
-export let history: string[];
+let history: string[];
 const MAX_LENGTH = 25;
 let ptr = 0;
 

@@ -1,6 +1,6 @@
 mod lexer;
 
-use lexer::{Tkn, LexerState};
+use lexer::{Tkn, TknSpan, lex_cmd_buf, get_token_at, LexerState};
 use logos::{Logos, Lexer};
 use rustyline::{DefaultEditor};
 use rustyline::error::ReadlineError;
@@ -108,23 +108,9 @@ fn handle_cmd(cmd: &str, heredocs: &mut VecDeque<String>, rl: &DefaultEditor) {
         if progs[0].trim().is_empty() { return; }
         match parse_program(progs[0], heredocs) {
             Ok(mut child_pr) => {
-                match child_pr.prog_name.as_str() {
-                    "history" => {
-                        for i in 0..rl.history().len() {
-                               let entry = rl.history().get(i, SearchDirection::Forward)
-                                .unwrap().unwrap().entry;
-                               println!("{}: {}", i, entry);
-                            }
-                    },
-                    "pwd" => println!("{}", env::current_dir().unwrap().display()),
-                    "cd" => match split(progs[0]) {
-                        Ok(args) => set_cwd(&args),
-                        Err(e) => println!("ERR: {}", e),
-                    },
-                    _ => match child_pr.status() {
-                        Ok(_) => (),
-                        Err(e) => println!("ERR: {}", e),
-                    },
+                match child_pr.status() {
+                    Ok(_) => (),
+                    Err(e) => println!("ERR: {}", e),
                 };
             },
             Err(e) => println!("ERR: {}", e),
@@ -245,23 +231,73 @@ fn parse_program(prog: &str, heredocs: &mut VecDeque<String>) -> anyhow::Result<
     })
 }
 
-fn set_cwd(args: &Vec<String>) {
+//fn lex_cmd_buf(lex: &mut Lexer<Tkn>, cmd_buf: &str) -> Option<(String, VecDeque<String>)> {
+//    let mut cmd_lines: Vec<(usize, usize)> = Vec::new(); //(linestart, lineend)
+//    let mut line_start: usize = lex.span().start; //0
+//    while let Some(res) = lex.next() {
+//        match res {
+//            Ok(Tkn::Newline) => {
+//                print!("\n");
+//                let span = lex.span();
+//                cmd_lines.push((line_start, span.start + 1)); // +1 to include newline;
+//                line_start = span.end;
+//            },
+//            Ok(Tkn::Quote(quoted_string)) => {
+//                print!("tkn: \"{}\"; ", &quoted_string);
+//            },
+//            Ok(_) =>  {
+//                print!("tkn: {}; ", lex.slice());
+//            },
+//            Err(_) => {
+//                print!("\n");
+//                return None;
+//            }
+//        }
+//    }
+//    let mut cmd = String::new();
+//    //push each cmd line into cmd
+//    for (l_start, l_end) in cmd_lines {
+//        cmd.push_str(&cmd_buf[l_start..l_end]);
+//    }
+//    if let Some(end_tkn) = cmd.split_whitespace().last() {
+//        //can not end with either of these operators
+//        if ["|", "||", "\\", "&&"].contains(&end_tkn) { return None }
+//    }
+//    let mut heredocs = VecDeque::with_capacity(lex.extras.heredocs.len());
+//    for (doc_start, doc_end) in lex.extras.heredocs.iter() {
+//        let heredoc = &cmd_buf[*doc_start..*doc_end];
+//        heredocs.push_back(String::from(heredoc));
+//    }
+//    Some((cmd, heredocs))
+//}
+
+fn _handle_cmd(tkns: Vec<TknSpan>, heredocs: VecDeque<String>) {
+    for tkn in tkns.iter() {
+        println!("{:?}, {:?}", tkn.kind, tkn.span);
+    }
+    println!("{:?}", heredocs);
+}
+
+
+fn set_cwd(args: &[TknSpan], cmd_buf: &str) {
     if args.len() == 1 { //cd 
         let home = env::home_dir().expect("Couldn't find HOME directory");
         env::set_current_dir(&home).expect("ERR chdir");
     } else if args.len() == 2 { //cd [..]
-        let mut new_cwd = PathBuf::from(Path::new(&args[1]));
+        let path_str = get_token_at(&args[1], cmd_buf); 
+        let mut new_cwd = PathBuf::from(Path::new(path_str));
         if new_cwd.starts_with("~") {
             new_cwd = expand_tilde(&new_cwd);
         }
         if let Err(_) = env::set_current_dir(&new_cwd) {
             println!("ERR: {} is an invalid path", new_cwd.display());
         }
-    } else {
-        println!("ERR: cd: too many arguments");
+    } else if args.len() > 2 {
+        println!("ERR: too many arguments for cd; {} is invalid", get_token_at(&args[2], cmd_buf));
     }
 } 
 
+//TODO: fix
 fn expand_tilde(path: &PathBuf) -> PathBuf {
     let mut expanded_path = env::home_dir().expect("Couldn't find HOME directory");
     if path == Path::new("~") {
@@ -272,46 +308,24 @@ fn expand_tilde(path: &PathBuf) -> PathBuf {
     }
 }
 
-fn lex_cmd_buf(lex: &mut Lexer<Tkn>, cmd_buf: &str) -> Option<(String, VecDeque<String>)> {
-    let mut cmd_lines: Vec<(usize, usize)> = Vec::new(); //(linestart, lineend)
-    let mut line_start: usize = lex.span().start; //0
-    while let Some(res) = lex.next() {
-        match res {
-            Ok(Tkn::Newline) => {
-                print!("\n");
-                let span = lex.span();
-                cmd_lines.push((line_start, span.start + 1)); // +1 to include newline;
-                line_start = span.end;
-            },
-            Ok(Tkn::Quote(quoted_string)) => {
-                print!("tkn: \"{}\"; ", &quoted_string);
-            },
-            Ok(Tkn::Whitespace) => (), //don't print whitespace
-            Ok(_) =>  {
-                print!("tkn: {}; ", lex.slice());
-            },
-            Err(_) => {
-                print!("\n");
-                return None;
+fn builtin_lookup(tkns: &Vec<TknSpan>, cmd_buf: &str, rl: &DefaultEditor) -> Option<()> {
+    if tkns.is_empty() { return None }
+    let first_tkn = get_token_at(&tkns[0], cmd_buf);
+    match first_tkn {
+        "history" => {
+            let hist_len = rl.history().len();
+            let start = std::cmp::max(0, hist_len - 15);
+            for i in start..hist_len {
+                let entry = rl.history().get(i, SearchDirection::Forward)
+                    .unwrap().unwrap().entry;
+                println!("{}", entry);
             }
-        }
+        },
+        "pwd" => println!("{}", env::current_dir().unwrap().display()),
+        "cd" => set_cwd(&tkns[..tkns.len()-1], cmd_buf),
+        _ => return None,
     }
-    let mut cmd = String::new();
-    //push each cmd line into cmd
-    for (l_start, l_end) in cmd_lines {
-        cmd.push_str(&cmd_buf[l_start..l_end]);
-    }
-    if let Some(end_tkn) = cmd.split_whitespace().last() {
-        //can not end with either of these operators
-        if ["|", "||", "\\", "&&"].contains(&end_tkn) { return None }
-    }
-    let mut heredocs = VecDeque::with_capacity(lex.extras.heredocs.len());
-    for (doc_start, doc_end) in lex.extras.heredocs.iter() {
-        let heredoc = &cmd_buf[*doc_start..*doc_end];
-        heredocs.push_back(String::from(heredoc));
-    }
-    Some((cmd, heredocs))
-
+    Some(())
 }
 
 fn main() -> rustyline::Result<()> {
@@ -334,19 +348,21 @@ fn main() -> rustyline::Result<()> {
                 cmd_buf.push_str(&input);
                 cmd_buf.push('\n'); //add back newline that readline stripped after user hit Enter
                 let lex_state = LexerState::new();
-                let mut lex = Tkn::lexer_with_extras(&cmd_buf, lex_state);
+                let mut lex = Tkn::lexer_with_extras(&cmd_buf, lex_state).spanned();
                 match lex_cmd_buf(&mut lex, &cmd_buf) {
-                    Some((cmd, mut heredocs)) => {
+                    Some((tkns, heredocs)) => {
                         send_osc133(PROMPT_END);
                         send_osc133(CMD_OUTPUT_START);
-                        handle_cmd(&cmd, &mut heredocs, &rl); //will wait for child processes
+                        if builtin_lookup(&tkns, &cmd_buf, &rl).is_none() {
+                            _handle_cmd(tkns, heredocs);
+                        }
                         send_osc133(CMD_END);
                         set_normal_prompt(&mut prompt, &mut line_num);
                         let _ = rl.add_history_entry(cmd_buf.trim());
                         cmd_buf.clear();
                     },
                     None => {
-                        if let Some(err) = lex.extras.syntax_err {
+                        if let Some(ref err) = lex.extras.syntax_err {
                             send_osc133(PROMPT_END);
                             //syntax errs get highest priority b/c they're unrecoverable
                             send_osc133(CMD_OUTPUT_START);
@@ -355,10 +371,10 @@ fn main() -> rustyline::Result<()> {
                             set_normal_prompt(&mut prompt, &mut line_num);
                             let _  = rl.add_history_entry(cmd_buf.trim());
                             cmd_buf.clear();
-                        } else if let Some(closer) = lex.extras.expected_closer {
-                            set_expected_closer_prompt(&mut prompt, &closer);
-                        } else if let Some(op) = lex.extras.continuation_for {
-                            set_needs_continuation_prompt(&mut prompt, &op);
+                        } else if let Some(ref closer) = lex.extras.expected_closer {
+                            set_expected_closer_prompt(&mut prompt, closer);
+                        } else if let Some(ref op) = lex.extras.continuation_for {
+                            set_needs_continuation_prompt(&mut prompt, op);
                         }
                     }
                 }
