@@ -9,6 +9,7 @@ pub struct LexerState { //re-initialize to new instance on every lex of cmd_buf
     heredocs: Vec<(usize, usize)>, //(doc_start, doc_end)
 
     pub syntax_err: Option<String>,
+    pub group_closers: VecDeque<char>,
     pub expected_closer: Option<String>,
     pub continuation_for: Option<String>, //if cmd ends with &&, ||, |, or \, need to prompt user
 }
@@ -19,6 +20,7 @@ impl LexerState {
             delimiters: VecDeque::new(),
             heredocs: Vec::new(),
             syntax_err: None,
+            group_closers: VecDeque::new(),
             expected_closer: None,
             continuation_for: None,
         }
@@ -65,6 +67,12 @@ pub enum Tkn {
     #[regex(r#"[`'"]"#, quote_handler)]
     Quote(String),
 
+    #[token("(", bracket_callback)]
+    LParen,
+
+    #[token(")", bracket_callback)]
+    RParen,
+
     #[token("\n", newline_handler)]
     Newline,
 }
@@ -99,7 +107,7 @@ fn redirect_callback(lex: &mut Lexer<Tkn>) -> bool {
 fn operator_callback(lex: &mut Lexer<Tkn>) -> Option<()> {
     let mut delim_lex = lex.clone().morph::<TargetDelim>();
     let operator = delim_lex.slice();
-    //look ahead to see if the next token is a valid heredoc delimiter
+    //look ahead to see if the next token is a valid delimiter
     //does not advance lex iterator. i.e. if delim_lex finds valid delimiter,
     //it will be consumed as a Tkn::Word in the next lext.next() call
     match delim_lex.next() {
@@ -136,6 +144,26 @@ fn heredoc_callback(lex: &mut Lexer<Tkn>) -> bool {
     }
     lex.extras = delim_lex.extras; //match LexerStates
     success                                   
+}
+
+fn bracket_callback(lex: &mut Lexer<Tkn>) -> bool {
+    let bracket = lex.slice();
+    let mut success = false;
+    match bracket {
+        "(" => lex.extras.group_closers.push_front(')'),
+        "[" => lex.extras.group_closers.push_front(']'),
+        "{" => lex.extras.group_closers.push_front('}'),
+        ")" | "]" | "}" => {
+            if let Some(closer) = lex.extras.group_closers.front() {
+                if bracket.chars().nth(0).unwrap() == *closer {
+                    lex.extras.group_closers.pop_front();
+                    success = true;
+                } 
+            } 
+        }
+        _ => (),
+    }
+    success
 }
 
 //returns a VecDeque of heredocs (if any) to be handed to the parser
@@ -265,19 +293,6 @@ pub struct TknSpan {
     pub span: Range<usize>,
 }
 
-/* 
- * Make a Vec<Vec<TknSpan>> instead, where each vec is a program and its necessary tkns? a program
- * is delimited by a newline, |, ||, &&, or ;
- * 
- * Each program is a Vec<TknSpan>. the last TknSpan is the program delimiter (one of [\n, ;, etc.])
- * When parsing, parse each program from first to last. upon encountering the delimiter, 
- *      if newline or ;, do nothing. 
- *      if pipe, execute pipe logic. Make the spawned Command pipe its I/O 
- *      if ||, collect exit status and run next prog if this failed
- *      if &&, collect exit status and run next prog if successful
- * */
-
-
 pub fn lex_cmd_buf(span_iter: &mut SpannedIter<'_, Tkn>, cmd_buf: &str) -> Option<(Vec<TknSpan>, VecDeque<String>)> {
     let mut tkns: Vec<TknSpan> = Vec::new();
     //fresh borrow of span_iter so can get span_iter.extras later
@@ -299,6 +314,9 @@ pub fn lex_cmd_buf(span_iter: &mut SpannedIter<'_, Tkn>, cmd_buf: &str) -> Optio
             }
         }
     }
+
+    if !span_iter.extras.group_closers.is_empty() { return None; } //unclosed paren, bracket, or curly
+
     //check if 2nd to last tkn is an invalid operator (last is newline)
     if let Some(tkn) = tkns.get(tkns.len()-2) { 
         if [Tkn::Semicolon, Tkn::Pipe, Tkn::CmdOr, Tkn::CmdAnd, ].contains(&tkn.kind) {
