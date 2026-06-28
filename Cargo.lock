@@ -2846,6 +2846,8 @@ dependencies = [
  "anyhow",
  "logos",
  "rustyline",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

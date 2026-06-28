@@ -1,7 +1,9 @@
 mod lexer;
 mod parser;
+mod executor;
 
 use lexer::{Tkn, TknSpan, lex_cmd_buf, get_token_at, LexerState};
+use executor::{execute_cmd_buf, execute_ast};
 use logos::{Logos, };
 use rustyline::{DefaultEditor};
 use rustyline::error::ReadlineError;
@@ -13,6 +15,7 @@ use std::collections::VecDeque;
 use anyhow::anyhow;
 
 const CMD_HISTORY: &str = "rust_shell_history.txt"; 
+pub const AS_SUBSHELL: &str = "--as-subshell";
 
 /* 
 OSC Escape sequence's data so that frontend typescript can differentiate between shell outputs
@@ -25,7 +28,7 @@ const PROMPT_END: &str = "B";
 const CMD_OUTPUT_START: &str = "C";
 const CMD_END: &str = "D";
 
-fn _handle_cmd(tkns: Vec<TknSpan>, heredocs: VecDeque<String>) {
+fn print_cmd<'a> (tkns: &'a [TknSpan], heredocs: &VecDeque<&'a str>) {
     for tkn in tkns.iter() {
         println!("{:?}, {:?}", tkn.kind, tkn.span);
     }
@@ -61,7 +64,7 @@ fn expand_tilde(path: &PathBuf) -> PathBuf {
     }
 }
 
-fn builtin_lookup(tkns: &Vec<TknSpan>, cmd_buf: &str, rl: &DefaultEditor) -> Option<()> {
+fn builtin_lookup(tkns: &[TknSpan], cmd_buf: &str, rl: &DefaultEditor) -> Option<()> {
     if tkns.is_empty() { return None }
     let first_tkn = get_token_at(&tkns[0], cmd_buf);
     match first_tkn {
@@ -82,6 +85,18 @@ fn builtin_lookup(tkns: &Vec<TknSpan>, cmd_buf: &str, rl: &DefaultEditor) -> Opt
 }
 
 fn main() -> rustyline::Result<()> {
+    //check if this process is running as a subshell
+    //TODO: add cryptography to ensure that the subshell really spawned by shell
+    if let Ok(serialized_ast) = std::env::var(AS_SUBSHELL) {
+        let parsed_ast = serde_json::from_str(&serialized_ast).unwrap_or_else(|_| {
+            process::exit(1);
+        });
+        match execute_ast(parsed_ast) {
+            Ok(exit_code) => process::exit(exit_code),
+            Err(_) => process::exit(1),
+        }
+    }
+    //else, this is running in the foreground, do REPL 
     send_osc133(CMD_OUTPUT_START);
     let mut rl = DefaultEditor::new()?;
     if let Err(e) = load_history(&mut rl) {
@@ -92,7 +107,6 @@ fn main() -> rustyline::Result<()> {
     let mut prompt = String::new();
     send_osc133(CMD_END);
     set_normal_prompt(&mut prompt, &mut line_num);
-
     loop {
         match rl.readline(&prompt) {
             Ok(input) => {
@@ -107,7 +121,10 @@ fn main() -> rustyline::Result<()> {
                         send_osc133(PROMPT_END);
                         send_osc133(CMD_OUTPUT_START);
                         if builtin_lookup(&tkns, &cmd_buf, &rl).is_none() {
-                            _handle_cmd(tkns, heredocs);
+                            print_cmd(&tkns, &heredocs);
+                             if let Err(e) = execute_cmd_buf(&cmd_buf, &tkns, heredocs) {
+                                 println!("ERR: {}", e);
+                             }
                         }
                         send_osc133(CMD_END);
                         set_normal_prompt(&mut prompt, &mut line_num);

@@ -1,6 +1,7 @@
 use logos::{Logos, Lexer, SpannedIter };
 use std::collections::VecDeque;
 use std::ops::Range;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct LexerState { //re-initialize to new instance on every lex of cmd_buf
@@ -27,7 +28,7 @@ impl LexerState {
     }
 }
 
-#[derive(Logos, Debug, PartialEq, Clone)]
+#[derive(Logos, Debug, PartialEq, Clone, Serialize, Deserialize)]
 #[logos(extras = LexerState)]
 #[logos(skip r#"[ \t\f]+"#)]
 pub enum Tkn {
@@ -293,7 +294,7 @@ pub struct TknSpan {
     pub span: Range<usize>,
 }
 
-pub fn lex_cmd_buf(span_iter: &mut SpannedIter<'_, Tkn>, cmd_buf: &str) -> Option<(Vec<TknSpan>, VecDeque<String>)> {
+pub fn lex_cmd_buf<'a> (span_iter: &mut SpannedIter<'a, Tkn>, cmd_buf: &'a str) -> Option<(Vec<TknSpan>, VecDeque<&'a str>)> {
     let mut tkns: Vec<TknSpan> = Vec::new();
     //fresh borrow of span_iter so can get span_iter.extras later
     for (res, span) in &mut *span_iter {
@@ -326,7 +327,7 @@ pub fn lex_cmd_buf(span_iter: &mut SpannedIter<'_, Tkn>, cmd_buf: &str) -> Optio
     let mut heredocs = VecDeque::with_capacity(span_iter.extras.heredocs.len());
     for (doc_start, doc_end) in span_iter.extras.heredocs.iter() {
         let heredoc = &cmd_buf[*doc_start..*doc_end];
-        heredocs.push_back(String::from(heredoc));
+        heredocs.push_back(heredoc);
     }
     Some((tkns, heredocs))
 }

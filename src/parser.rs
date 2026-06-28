@@ -1,106 +1,42 @@
 use crate::lexer::{TknSpan, Tkn, get_token_at};
-use std::process::{Command, Stdio, ExitStatus};
+use crate::executor::{ChildPr, Redirect, Redir, };
 use std::collections::VecDeque;
 use std::iter::{Peekable};
 use std::slice::Iter;
-use std::process;
-use std::fs::{File, OpenOptions};
-use std::io::Write;
+use serde::{Deserialize, Serialize};
 use anyhow::anyhow;
+
 /* 
  * Recursive Descent Parser
  * See https://ruslanspivak.com/lsbasi-part7/ for an e.g.
  *
  * */
-struct ChildPr { //a child process spawned by shell
-    pub handle: Command,
-    //I/O streams for redirection
-    stdin: Option<Stdio>,
-    stdout: Option<Stdio>,
 
-    pub prog_name: String,
-    pub heredoc_content: Option<String>,
-}
-
-impl ChildPr {
-    //for setting stdin/stdout for piping
-    pub fn set_stdout(&mut self, fd: Stdio) {
-        self.handle.stdout(fd);
-    }
-    pub fn set_stdin(&mut self, fd: Stdio) {
-        self.handle.stdin(fd);
-    }
-
-    fn handle_redirect(&mut self) {
-        if let Some(fd) = self.stdin.take() {
-            self.handle.stdin(fd);
-        }
-        if let Some(fd) = self.stdout.take() {
-            self.handle.stdout(fd);
-        }
-    }
-
-    pub fn spawn(&mut self) -> anyhow::Result<process::Child> {
-        self.handle_redirect(); //apply <, >, >> etc. 
-        match self.handle.spawn() {
-            Ok(mut c) => {
-                if let Some(buf) = self.heredoc_content.take() {
-                    if let Some(mut stdin) = c.stdin.take() {
-                        let _ = stdin.write_all(buf.as_bytes());
-                    }
-                }
-                Ok(c)
-            }
-            Err(e) => Err(anyhow!("{}", e)),
-        }
-    }
-
-    //same as spawn, but will wait for process to finish and collect status
-    pub fn status(&mut self) -> anyhow::Result<ExitStatus> {
-        self.handle_redirect();
-        match self.handle.spawn() {
-            Ok(mut c) => {
-                if let Some(buf) = self.heredoc_content.take() {
-                    if let Some(mut stdin) = c.stdin.take() {
-                        let _ = stdin.write_all(buf.as_bytes());
-                    }
-                }
-                c.wait().map_err(|e| anyhow!("{}", e))
-            },
-            Err(e) => Err(anyhow!("{}",e)),
-        }
-    }
-}
-
-pub enum AstNode {
-    Prog(ChildPr),
+#[derive(Serialize, Deserialize)]
+pub enum AstNode<'a> {
+    #[serde(borrow)]
+    Prog(ChildPr<'a>),
 
     Logical {
-        lhs: Box<AstNode>,
+        lhs: Box<AstNode<'a>>,
         operator: Tkn,
-        rhs: Box<AstNode>,
+        rhs: Box<AstNode<'a>>,
     },
 
-    Pipeline(Vec<Box<AstNode>>),
+    Pipeline(Vec<Box<AstNode<'a>>>),
 
-    Subshell(Vec<Box<AstNode>>),
-}
-
-fn build_cmd(args: &[&str],) -> Command {
-    let mut cmd = Command::new(args[0]);
-    cmd.args(&args[1..]); 
-    cmd
+    Subshell(Vec<Box<AstNode<'a>>>),
 }
 
 pub struct Parser<'a>
 {
     tkns: Peekable<Iter<'a, TknSpan>>,
     cur_tkn: Option<&'a TknSpan>,
-    heredocs: VecDeque<String>,
+    heredocs: VecDeque<&'a str>,
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(tkns_: &'a Vec<TknSpan>, heredocs: VecDeque<String>) -> Self {
+    pub fn new(tkns_: &'a [TknSpan], heredocs: VecDeque<&'a str>) -> Self {
         Self {
             tkns: tkns_.iter().peekable(),
             cur_tkn: None,
@@ -113,21 +49,20 @@ impl<'a> Parser<'a> {
         self.cur_tkn
     }
     
-    fn eat(&mut self, expected_type: Tkn, cmd_buf: &str) -> anyhow::Result<()>{
-        if self.cur_tkn.is_none() {
+    fn eat(&mut self, expected_type: Tkn, cmd_buf: &'a str) -> anyhow::Result<()> {
+        if let Some(tkn) = self.advance() {
+            if tkn.kind != expected_type {
+                return Err(anyhow!("Syntax err: unexpected token {}", get_token_at(tkn, cmd_buf)));
+            }
+        } else {
             return Err(anyhow!("Syntax err: missing token {:?}", expected_type));
         }
-        let cur = self.cur_tkn.unwrap();
-        if cur.kind != expected_type {
-            return Err(anyhow!("Syntax err: unexpected token {}", get_token_at(cur, cmd_buf)));
-        }
-        self.cur_tkn = self.tkns.next();
         Ok(())
     }
 
-    fn expr(&mut self, cmd_buf: &str) -> anyhow::Result<Box<AstNode>> {
-        let mut stdin = Stdio::inherit();
-        let mut stdout = Stdio::inherit();
+    fn expr(&mut self, cmd_buf: &'a str) -> anyhow::Result<Box<AstNode<'a>>> {
+        let mut redirect_in = None;
+        let mut redirect_out = None;
         let mut heredoc_content = None;
         let mut args = Vec::new();
         while let Some(cur_tkn) = self.advance() {
@@ -136,25 +71,38 @@ impl<'a> Parser<'a> {
                 Tkn::Word | Tkn::Quote(_) => { args.push(get_token_at(cur_tkn, cmd_buf)); },
                 /* backslash */
                 //Tkn::Backslash => { //newline should follow backslash
-                //    self.eat(Tkn::Newline, cmd_buf)?;
                 //}, 
-                /* redirects */
+                /* redirects */ 
                 Tkn::RedirectIn => {
                     let infile = get_token_at(self.advance().unwrap(), cmd_buf);
                     //unwrap safe because lexer and shell prompt loop guarantees a valid delimiter found
-                    stdin = Stdio::from(File::open(infile)?);
+                    redirect_in = Some(Redirect { dir: Redir::In, file: infile });
                 },
                 Tkn::RedirectOut => {
                     let outfile = get_token_at(self.advance().unwrap(), cmd_buf);
-                    stdout = Stdio::from(File::create(outfile)?);
+                    redirect_out = Some(Redirect { dir: Redir::Out, file: outfile });
                 },
                 Tkn::RedirectAppend => {
                     let outfile = get_token_at(self.advance().unwrap(), cmd_buf);
-                    stdout = Stdio::from(OpenOptions::new().append(true).create(true).open(outfile)?);
+                    redirect_out = Some(Redirect { dir: Redir::Append, file: outfile });
                 },
                 Tkn::Heredoc => {
                     heredoc_content = self.heredocs.pop_front();
-                    stdin = Stdio::piped();
+                    //eat the heredoc delimiter
+                    match self.tkns.peek().map(|t| &t.kind) {
+                        Some(Tkn::Word) => { 
+                            self.eat(Tkn::Word, cmd_buf)?; 
+                        }
+                        Some(Tkn::Quote(s)) => { 
+                            self.eat(Tkn::Quote(s.clone()), cmd_buf)?; 
+                        }
+                        Some(_) => {
+                            anyhow::bail!("unreachable: Invalid delimiter for heredoc");
+                        }
+                        None => {
+                            anyhow::bail!("unreachable: Expected heredoc delimiter, found EOF");
+                        }
+                    };
                 },
                 /* Grouped commands in parentheses */ 
                 Tkn::LParen => {
@@ -167,30 +115,31 @@ impl<'a> Parser<'a> {
                     if args.is_empty() { 
                         return Err(anyhow!("Syntax Err: empty args"));
                     }
+                    println!("args from parser: {:?}", args);
                     return Ok(Box::new(AstNode::Prog(ChildPr {
-                        handle: build_cmd(&args),
-                        stdin: Some(stdin),
-                        stdout: Some(stdout),
-                        prog_name: args[0].to_string(),
+                        prog_name: args[0],
+                        args: args,
+                        redirect_in,
+                        redirect_out,
                         heredoc_content,
                     })));
                 },
                 _ => return Err(anyhow!("Syntax Err: unexpected tkn in expression")),
             }
         }
-        Err(anyhow!("no tkns"))
+        Err(anyhow!("Parse error: no tkns"))
     }
 
-    pub fn subshell(&mut self, cmd_buf: &str) -> anyhow::Result<Box<AstNode>> {
+    fn subshell(&mut self, cmd_buf: &'a str) -> anyhow::Result<Box<AstNode<'a>>> {
         let mut subsh = Vec::new();
         while self.cur_tkn.map_or(false, |tkn| tkn.kind != Tkn::RParen) {
             self.ignore_next_newlines();
-            subsh.push(self.build_AST(cmd_buf)?);
+            subsh.push(self.build_ast(cmd_buf)?);
         }
         Ok(Box::new(AstNode::Subshell(subsh)))
     }
 
-    pub fn build_pipeline(&mut self, cmd_buf: &str) -> anyhow::Result<Box<AstNode>> {
+    fn build_pipeline(&mut self, cmd_buf: &'a str) -> anyhow::Result<Box<AstNode<'a>>> {
         let mut node = self.expr(cmd_buf)?;
 
         if self.cur_tkn.map_or(false, |tkn| tkn.kind == Tkn::Pipe) {
@@ -205,7 +154,7 @@ impl<'a> Parser<'a> {
         Ok(node)
     }
 
-    fn build_AST(&mut self, cmd_buf: &str) -> anyhow::Result<Box<AstNode>> {
+    fn build_ast(&mut self, cmd_buf: &'a str) -> anyhow::Result<Box<AstNode<'a>>> {
         let mut node = self.build_pipeline(cmd_buf)?;
         loop {
             if self.cur_tkn.is_none() {
@@ -222,16 +171,16 @@ impl<'a> Parser<'a> {
                         rhs: self.build_pipeline(cmd_buf)?,
                     });
                 },
-                _ => return Err(anyhow!("Syntax Err in build_AST\nexpected \\n, ;, ||, or && but got {:?}", tkn.kind)),
+                _ => return Err(anyhow!("Syntax Err in build_ast\nexpected \\n, ;, ||, or && but got {:?}", tkn.kind)),
             }
         }
     }
 
-    pub fn parse(&mut self, cmd_buf: &str) -> anyhow::Result<Vec<Box<AstNode>>> {
+    pub fn parse(&mut self, cmd_buf: &'a str) -> anyhow::Result<Vec<Box<AstNode<'a>>>> {
         let mut executables = Vec::new();
         self.ignore_next_newlines();
         while !self.tkns.peek().is_none() {
-            let node = self.build_AST(cmd_buf)?;
+            let node = self.build_ast(cmd_buf)?;
             if self.cur_tkn.is_none() {
                 //this shouldn't be reachable but just in case
                 return Err(anyhow!("Syntax Err"));
@@ -242,7 +191,7 @@ impl<'a> Parser<'a> {
                     executables.push(node);
                     self.ignore_next_newlines();
                 }
-                _ => return Err(anyhow!("Syntax err in parse\nexpected '\\n', ';', or ')', but got {:?}", tkn.kind)),
+                _ => return Err(anyhow!("Syntax Err:\nwhile parsing, expected '\\n', ';', or ')', but got {:?}", tkn.kind)),
             }
         }
         Ok(executables)
@@ -257,6 +206,7 @@ impl<'a> Parser<'a> {
             }
         }
     }
+
 }
 
 
