@@ -31,7 +31,7 @@ pub struct ChildPr<'a> { //a child process spawned by shell
     pub redirect_out: Option<Redirect<'a>>, // for > 
 
     pub prog_name: &'a str,
-    pub heredoc_content: Option<&'a str>,
+    pub heredoc_content: Vec<&'a str>,
 }
 
 impl<'a> ChildPr<'a> {
@@ -45,7 +45,7 @@ impl<'a> ChildPr<'a> {
         if let Some(ref infile) = self.redirect_in {
             handle.stdin(Stdio::from(File::open(infile.file)?));
         } 
-        if let Some(_) = self.heredoc_content {
+        if !self.heredoc_content.is_empty() {
             handle.stdin(Stdio::piped());
         }
 
@@ -74,9 +74,11 @@ impl<'a> ChildPr<'a> {
         self.handle_redirect(&mut handle)?;
         match handle.spawn() {
             Ok(mut c) => {
-                if let Some(buf) = self.heredoc_content.take() {
-                    if let Some(mut stdin) = c.stdin.take() {
-                        let _ = stdin.write_all(buf.as_bytes());
+                if !self.heredoc_content.is_empty() {
+                    if let Some(mut stdin_handle) = c.stdin.take() {
+                        for content in self.heredoc_content.iter() {
+                            let _ = stdin_handle.write_all((*content).as_bytes());
+                        }
                     }
                 }
                 Ok(c)
@@ -91,9 +93,11 @@ impl<'a> ChildPr<'a> {
         self.handle_redirect(&mut handle)?;
         match handle.spawn() {
             Ok(mut c) => {
-                if let Some(buf) = self.heredoc_content.take() {
-                    if let Some(mut stdin) = c.stdin.take() {
-                        let _ = stdin.write_all(buf.as_bytes());
+                if !self.heredoc_content.is_empty() {
+                    if let Some(mut stdin_handle) = c.stdin.take() {
+                        for content in self.heredoc_content.iter() {
+                            let _ = stdin_handle.write_all((*content).as_bytes());
+                        }
                     }
                 }
                 Ok(c.wait()?)
@@ -172,9 +176,9 @@ fn dfs(node: &mut Box<AstNode>) -> anyhow::Result<i32> {
             let mut spawned_children = spawn_pipeline(pipeline)?;
             let mut res = 0;
             for c in spawned_children.iter_mut() {
-                res = c.wait()?
-                    .code()
-                    .unwrap_or(1);
+                if let Ok(exit_stat) = c.wait() {
+                    res = exit_stat.code().unwrap_or(1);
+                }
                 if res != 0 { break; } 
             }
             return Ok(res);

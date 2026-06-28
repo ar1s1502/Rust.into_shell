@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::io::Write;
 use std::collections::VecDeque;
 use anyhow::anyhow;
+use std::time::Duration;
+use std::thread;
 
 const CMD_HISTORY: &str = "rust_shell_history.txt"; 
 pub const AS_SUBSHELL: &str = "--as-subshell";
@@ -32,7 +34,7 @@ fn print_cmd<'a> (tkns: &'a [TknSpan], heredocs: &VecDeque<&'a str>) {
     for tkn in tkns.iter() {
         println!("{:?}, {:?}", tkn.kind, tkn.span);
     }
-    println!("{:?}", heredocs);
+    println!("heredocs: {:?}", heredocs);
 }
 
 fn set_cwd(args: &[TknSpan], cmd_buf: &str) {
@@ -108,6 +110,9 @@ fn main() -> rustyline::Result<()> {
     send_osc133(CMD_END);
     set_normal_prompt(&mut prompt, &mut line_num);
     loop {
+        //sleep fixes a weird race condition where sometimes the promptline prints before the output
+        //on the cat << A | cat << B | cat << C test case
+        thread::sleep(Duration::from_millis(2)); 
         match rl.readline(&prompt) {
             Ok(input) => {
                 if input.trim().is_empty() {continue;}
@@ -122,9 +127,9 @@ fn main() -> rustyline::Result<()> {
                         send_osc133(CMD_OUTPUT_START);
                         if builtin_lookup(&tkns, &cmd_buf, &rl).is_none() {
                             print_cmd(&tkns, &heredocs);
-                             if let Err(e) = execute_cmd_buf(&cmd_buf, &tkns, heredocs) {
-                                 println!("ERR: {}", e);
-                             }
+                            if let Err(e) = execute_cmd_buf(&cmd_buf, &tkns, heredocs) {
+                                println!("ERR: {}", e);
+                            }
                         }
                         send_osc133(CMD_END);
                         set_normal_prompt(&mut prompt, &mut line_num);
@@ -145,7 +150,7 @@ fn main() -> rustyline::Result<()> {
                             set_expected_closer_prompt(&mut prompt, closer);
                         } else if let Some(ref op) = lex.extras.continuation_for {
                             set_needs_continuation_prompt(&mut prompt, op);
-                        } else if let Some(ref bracket) = lex.extras.group_closers.front() {
+                        } else if let Some(ref bracket) = lex.extras.bracket_closers.front() {
                             set_expected_closer_prompt(&mut prompt, &bracket.to_string());
                         }
                     }

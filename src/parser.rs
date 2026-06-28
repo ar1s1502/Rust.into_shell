@@ -49,10 +49,10 @@ impl<'a> Parser<'a> {
         self.cur_tkn
     }
     
-    fn eat(&mut self, expected_type: Tkn, cmd_buf: &'a str) -> anyhow::Result<()> {
+    fn eat(&mut self, expected_type: Tkn) -> anyhow::Result<()> {
         if let Some(tkn) = self.advance() {
             if tkn.kind != expected_type {
-                return Err(anyhow!("Syntax err: unexpected token {}", get_token_at(tkn, cmd_buf)));
+                return Err(anyhow!("Syntax err: expected token of kind {} but got '{}'", expected_type, tkn.kind));
             }
         } else {
             return Err(anyhow!("Syntax err: missing token {:?}", expected_type));
@@ -63,7 +63,7 @@ impl<'a> Parser<'a> {
     fn expr(&mut self, cmd_buf: &'a str) -> anyhow::Result<Box<AstNode<'a>>> {
         let mut redirect_in = None;
         let mut redirect_out = None;
-        let mut heredoc_content = None;
+        let mut heredoc_content = Vec::new();
         let mut args = Vec::new();
         while let Some(cur_tkn) = self.advance() {
             match cur_tkn.kind {
@@ -87,14 +87,14 @@ impl<'a> Parser<'a> {
                     redirect_out = Some(Redirect { dir: Redir::Append, file: outfile });
                 },
                 Tkn::Heredoc => {
-                    heredoc_content = self.heredocs.pop_front();
+                    heredoc_content.push(self.heredocs.pop_front().unwrap_or(""));
                     //eat the heredoc delimiter
                     match self.tkns.peek().map(|t| &t.kind) {
                         Some(Tkn::Word) => { 
-                            self.eat(Tkn::Word, cmd_buf)?; 
+                            self.eat(Tkn::Word)?; 
                         }
                         Some(Tkn::Quote(s)) => { 
-                            self.eat(Tkn::Quote(s.clone()), cmd_buf)?; 
+                            self.eat(Tkn::Quote(s.clone()))?; 
                         }
                         Some(_) => {
                             anyhow::bail!("unreachable: Invalid delimiter for heredoc");
@@ -106,9 +106,7 @@ impl<'a> Parser<'a> {
                 },
                 /* Grouped commands in parentheses */ 
                 Tkn::LParen => {
-                    let subshell = self.subshell(cmd_buf)?;
-                    self.eat(Tkn::RParen, cmd_buf)?;
-                    return Ok(subshell);
+                    return self.subshell(cmd_buf);
                 }
                 /* program delimiters */
                 Tkn::Newline | Tkn::CmdOr | Tkn::Pipe | Tkn::CmdAnd | Tkn::Semicolon | Tkn::RParen => {
@@ -132,11 +130,15 @@ impl<'a> Parser<'a> {
 
     fn subshell(&mut self, cmd_buf: &'a str) -> anyhow::Result<Box<AstNode<'a>>> {
         let mut subsh = Vec::new();
-        while self.cur_tkn.map_or(false, |tkn| tkn.kind != Tkn::RParen) {
+        loop {
             self.ignore_next_newlines();
+            println!("cur tkn: {}", self.cur_tkn.unwrap().kind);
+            if self.tkns.peek().map_or(false, |t| t.kind == Tkn::RParen) { 
+                self.eat(Tkn::RParen)?;
+                return Ok(Box::new(AstNode::Subshell(subsh)));
+            }
             subsh.push(self.build_ast(cmd_buf)?);
         }
-        Ok(Box::new(AstNode::Subshell(subsh)))
     }
 
     fn build_pipeline(&mut self, cmd_buf: &'a str) -> anyhow::Result<Box<AstNode<'a>>> {
@@ -171,7 +173,7 @@ impl<'a> Parser<'a> {
                         rhs: self.build_pipeline(cmd_buf)?,
                     });
                 },
-                _ => return Err(anyhow!("Syntax Err in build_ast\nexpected \\n, ;, ||, or && but got {:?}", tkn.kind)),
+                _ => return Err(anyhow!("Syntax Err in build_ast\nexpected \\n, ;, ||, or && but got '{}'", tkn.kind)),
             }
         }
     }
@@ -191,7 +193,7 @@ impl<'a> Parser<'a> {
                     executables.push(node);
                     self.ignore_next_newlines();
                 }
-                _ => return Err(anyhow!("Syntax Err:\nwhile parsing, expected '\\n', ';', or ')', but got {:?}", tkn.kind)),
+                _ => return Err(anyhow!("Syntax Err:\nwhile parsing, expected '\\n', ';', or ')', but got '{}'", tkn.kind)),
             }
         }
         Ok(executables)

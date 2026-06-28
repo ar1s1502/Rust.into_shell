@@ -2,6 +2,9 @@ use logos::{Logos, Lexer, SpannedIter };
 use std::collections::VecDeque;
 use std::ops::Range;
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
+///TODO: Custom error handling for lexer
 
 #[derive(Debug, Clone)]
 pub struct LexerState { //re-initialize to new instance on every lex of cmd_buf
@@ -10,7 +13,7 @@ pub struct LexerState { //re-initialize to new instance on every lex of cmd_buf
     heredocs: Vec<(usize, usize)>, //(doc_start, doc_end)
 
     pub syntax_err: Option<String>,
-    pub group_closers: VecDeque<char>,
+    pub bracket_closers: VecDeque<char>,
     pub expected_closer: Option<String>,
     pub continuation_for: Option<String>, //if cmd ends with &&, ||, |, or \, need to prompt user
 }
@@ -21,7 +24,7 @@ impl LexerState {
             delimiters: VecDeque::new(),
             heredocs: Vec::new(),
             syntax_err: None,
-            group_closers: VecDeque::new(),
+            bracket_closers: VecDeque::new(),
             expected_closer: None,
             continuation_for: None,
         }
@@ -47,16 +50,16 @@ pub enum Tkn {
     #[token("<<", heredoc_callback)]
     Heredoc,
 
-    #[token("|", operator_callback)] //handle pipe syntax in ./shell.rs
+    #[token("|", )] //handle pipe syntax in ./shell.rs
     Pipe,
 
-    #[token("\\", operator_callback)]
+    #[token("\\", )]
     Backslash,
 
-    #[token("&&", operator_callback)]
+    #[token("&&")]
     CmdAnd,
 
-    #[token("||", operator_callback)]
+    #[token("||")]
     CmdOr,
 
     #[token(";")]
@@ -76,6 +79,31 @@ pub enum Tkn {
 
     #[token("\n", newline_handler)]
     Newline,
+}
+
+//not used for tkn generation, only for debugging/error reporting
+//use str reference to cmd buf for tkns
+impl fmt::Display for Tkn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Tkn::Word => "word",
+            Tkn::RedirectIn => "<",
+            Tkn::RedirectOut => ">",
+            Tkn::RedirectAppend => ">>",
+            Tkn::Heredoc => "<<",
+            Tkn::Pipe => "|",
+            Tkn::Backslash => "\\",
+            Tkn::CmdAnd => "&&",
+            Tkn::CmdOr => "||",
+            Tkn::Semicolon => ";",
+            Tkn::And => "&",
+            Tkn::Quote(content) => return write!(f, "{}", content),
+            Tkn::LParen => "(",
+            Tkn::RParen => ")",
+            Tkn::Newline => "newline",
+        };
+        write!(f, "{}", s)
+    }
 }
 
 /*
@@ -104,29 +132,6 @@ fn redirect_callback(lex: &mut Lexer<Tkn>) -> bool {
     success
 }
 
-//handles |, ||, &&, and \
-fn operator_callback(lex: &mut Lexer<Tkn>) -> Option<()> {
-    let mut delim_lex = lex.clone().morph::<TargetDelim>();
-    let operator = delim_lex.slice();
-    //look ahead to see if the next token is a valid delimiter
-    //does not advance lex iterator. i.e. if delim_lex finds valid delimiter,
-    //it will be consumed as a Tkn::Word in the next lext.next() call
-    match delim_lex.next() {
-        Some(Ok(TargetDelim::Delim(_)) | Ok(TargetDelim::Quote(_))) => {
-            delim_lex.extras.continuation_for = None;
-        },
-        Some(Ok(TargetDelim::Newline)) => {
-            delim_lex.extras.continuation_for = Some(operator.to_string());
-        },
-        _ => { //invalid input following operator, like another shell operator, (), etc.
-            delim_lex.extras.syntax_err = Some(format!("parse error near {}", delim_lex.span().end));
-        },
-    }
-
-    lex.extras = delim_lex.extras; //match LexerStates
-    Some(())
-}
-
 fn heredoc_callback(lex: &mut Lexer<Tkn>) -> bool {
     let mut delim_lex = lex.clone().morph::<TargetDelim>();
     let mut success = false;
@@ -149,22 +154,22 @@ fn heredoc_callback(lex: &mut Lexer<Tkn>) -> bool {
 
 fn bracket_callback(lex: &mut Lexer<Tkn>) -> bool {
     let bracket = lex.slice();
-    let mut success = false;
     match bracket {
-        "(" => lex.extras.group_closers.push_front(')'),
-        "[" => lex.extras.group_closers.push_front(']'),
-        "{" => lex.extras.group_closers.push_front('}'),
+        "(" => lex.extras.bracket_closers.push_front(')'),
+        "[" => lex.extras.bracket_closers.push_front(']'),
+        "{" => lex.extras.bracket_closers.push_front('}'),
         ")" | "]" | "}" => {
-            if let Some(closer) = lex.extras.group_closers.front() {
+            if let Some(closer) = lex.extras.bracket_closers.front() {
                 if bracket.chars().nth(0).unwrap() == *closer {
-                    lex.extras.group_closers.pop_front();
-                    success = true;
-                } 
+                    lex.extras.bracket_closers.pop_front();
+                    return true;
+                }
             } 
+            return false;
         }
         _ => (),
     }
-    success
+    return true;
 }
 
 //returns a VecDeque of heredocs (if any) to be handed to the parser
@@ -172,28 +177,29 @@ fn newline_handler(lex: &mut Lexer<Tkn>) -> Option<()> {
     let mut heredoc_start = lex.span().end; //heredoc (if any) starts right after the newline
     let mut heredoc_end = lex.span().end;
     let mut heredoc_lex = lex.clone().morph::<HeredocTkn>();
+    let mut line_len = 0;
 
     while let Some(delim) = heredoc_lex.extras.delimiters.pop_front() {
+        println!("making heredoc for heredoc_delim {}", delim);
         let mut closed = false;
-        //let mut heredoc_content = String::new();
         while let Some(res) = heredoc_lex.next() {
             match res {
                 Ok(HeredocTkn::HeredocLine) => {
                     let line = heredoc_lex.slice();
+                    line_len = line.len();
                     if line.trim_end() == &delim {
                         closed = true;
                         break;
                     }
-                    heredoc_end += line.len();
-                    //heredoc_content.push_str(&line);
+                    heredoc_end += line_len;
                 },
                 Err(e) => panic!("ERR: {:?}", e),
             }
         }
         if closed {
             heredoc_lex.extras.heredocs.push((heredoc_start, heredoc_end));
+            heredoc_end += line_len;
             heredoc_start = heredoc_end;
-            //heredoc_lex.extras.heredocs.push(heredoc_content);
         } else { //we have to poll for more input from shell
             heredoc_lex.extras.expected_closer = Some(delim);
             *lex = heredoc_lex.morph();
@@ -316,7 +322,7 @@ pub fn lex_cmd_buf<'a> (span_iter: &mut SpannedIter<'a, Tkn>, cmd_buf: &'a str) 
         }
     }
 
-    if !span_iter.extras.group_closers.is_empty() { return None; } //unclosed paren, bracket, or curly
+    if !span_iter.extras.bracket_closers.is_empty() { return None; } //unclosed paren, bracket, or curly
 
     //check if 2nd to last tkn is an invalid operator (last is newline)
     if let Some(tkn) = tkns.get(tkns.len()-2) { 
