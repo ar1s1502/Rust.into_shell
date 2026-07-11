@@ -50,16 +50,16 @@ pub enum Tkn {
     #[token("<<", heredoc_callback)]
     Heredoc,
 
-    #[token("|", )] //handle pipe syntax in ./shell.rs
+    #[token("|", )] 
     Pipe,
 
     #[token("\\", )]
     Backslash,
 
-    #[token("&&")]
+    #[token("&&", )]
     CmdAnd,
 
-    #[token("||")]
+    #[token("||", )]
     CmdOr,
 
     #[token(";")]
@@ -132,6 +132,30 @@ fn redirect_callback(lex: &mut Lexer<Tkn>) -> bool {
     success
 }
 
+//handles |, ||, &&, and \
+fn operator_callback(lex: &mut Lexer<Tkn>) -> Option<()> {
+    let mut delim_lex = lex.clone().morph::<TargetDelim>();
+    let operator = delim_lex.slice();
+    //look ahead to see if the next token is a valid delimiter
+    //|, ||, && can not be followed by another operator. if newline, then must prompt for
+    //continuation
+    //does not advance lex iterator. i.e. if delim_lex finds valid delimiter,
+    //it will be consumed as a Tkn::Word in the next lext.next() call
+    match delim_lex.next() {
+        Some(Ok(TargetDelim::Delim(_)) | Ok(TargetDelim::Quote(_))) => {
+            delim_lex.extras.continuation_for = None;
+        },
+        Some(Ok(TargetDelim::Newline)) => {
+            delim_lex.extras.continuation_for = Some(operator.to_string());
+        },
+        _ => { //invalid input following operator, like another shell operator, (), etc.
+            delim_lex.extras.syntax_err = Some(format!("parse error near {}", delim_lex.span().end));
+        },
+    }
+    lex.extras = delim_lex.extras; //match LexerStates
+    Some(())
+}
+
 fn heredoc_callback(lex: &mut Lexer<Tkn>) -> bool {
     let mut delim_lex = lex.clone().morph::<TargetDelim>();
     let mut success = false;
@@ -180,7 +204,6 @@ fn newline_handler(lex: &mut Lexer<Tkn>) -> Option<()> {
     let mut line_len = 0;
 
     while let Some(delim) = heredoc_lex.extras.delimiters.pop_front() {
-        println!("making heredoc for heredoc_delim {}", delim);
         let mut closed = false;
         while let Some(res) = heredoc_lex.next() {
             match res {
@@ -232,7 +255,7 @@ enum QuoteTkn {
 #[derive(Logos, Debug, PartialEq, Clone)]
 #[logos(extras = LexerState)]
 #[logos(skip r"[ \t\f]+")] // Ignore this regex pattern between token
-enum TargetDelim { //for finding valid target after one of <, >, <<, or <<
+enum TargetDelim { //for finding valid target after one of <, >, <<, >>, ||, &&, or |
     // A valid delimiter is 1 or more characters that are NOT 
     // whitespace or shell operators.
 
@@ -309,9 +332,9 @@ pub fn lex_cmd_buf<'a> (span_iter: &mut SpannedIter<'a, Tkn>, cmd_buf: &'a str) 
                 match tkn {
                     Tkn::Newline => println!(),
                     Tkn::Quote(ref quote_content) => {
-                        print!("tkn: \"{}\"; ", quote_content);
+                        print!("tkn: '{}'; ", quote_content);
                     },
-                    _ => print!("tkn: {}; ", &cmd_buf[span.start..span.end]),
+                    _ => print!("tkn: '{}'; ", &cmd_buf[span.start..span.end]),
                 }
                 tkns.push(TknSpan {kind: tkn, span});
             },
@@ -326,7 +349,8 @@ pub fn lex_cmd_buf<'a> (span_iter: &mut SpannedIter<'a, Tkn>, cmd_buf: &'a str) 
 
     //check if 2nd to last tkn is an invalid operator (last is newline)
     if let Some(tkn) = tkns.get(tkns.len()-2) { 
-        if [Tkn::Semicolon, Tkn::Pipe, Tkn::CmdOr, Tkn::CmdAnd, ].contains(&tkn.kind) {
+        if [Tkn::Pipe, Tkn::CmdOr, Tkn::CmdAnd, ].contains(&tkn.kind) {
+            span_iter.extras.continuation_for = Some(get_token_at(tkn, cmd_buf).to_string());
             return None;
         }
     }

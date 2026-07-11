@@ -1,13 +1,30 @@
 use crate::parser::{AstNode, Parser};
 use crate::lexer::{TknSpan, Tkn};
-use crate::AS_SUBSHELL;
+use crate::{AS_SUBSHELL, CMD_HISTORY};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashMap};
 use std::process::{Command, Stdio, ExitStatus};
 use std::process;
 use std::fs::{File, OpenOptions};
-use std::io::{Write, self};
+use std::io::{Write, self, PipeReader, PipeWriter};
+use std::env;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use anyhow::anyhow;
+
+type BuiltinFn = fn(&[&str], Option<PipeReader>) -> anyhow::Result<String>;
+
+//Global immutable hashmap of <builtin command name>:<function to execute builtin>
+pub static BUILTINS: OnceLock<HashMap<&'static str, BuiltinFn>> = OnceLock::new();
+pub fn get_builtins() -> &'static HashMap<&'static str, BuiltinFn> {
+    BUILTINS.get_or_init(|| {
+        HashMap::from([
+            ("pwd", pwd as BuiltinFn),
+            ("cd", set_cwd),
+            ("history", get_history),
+        ])
+    })
+}
 
 #[derive(Serialize, Deserialize)]
 pub enum Redir {
@@ -23,12 +40,40 @@ pub struct Redirect<'a> {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct Builtin<'a> { //built in command 
+    #[serde(borrow)]
+    pub args: Vec<&'a str>,
+    //I/O streams for redirection
+    pub redirect_in: Option<Redirect<'a>>,  // for < operator
+    pub redirect_out: Option<Redirect<'a>>, // for >, >>
+    //pub heredoc_content: Vec<'a str>, 
+}
+
+impl<'a> Builtin<'a> {
+    pub fn exec_builtin(&self, pipe_write: Option<PipeWriter>, pipe_read: Option<PipeReader>) {
+        let builtin_fn = get_builtins().get(self.args[0]).unwrap(); //unwrap safe because parser checks if in builtins
+        match builtin_fn(&self.args, pipe_read) {
+            Ok(output_str) => {
+                    if let Some(mut pipe_writer) = pipe_write {
+                        std::thread::spawn(move || {
+                            let _ = pipe_writer.write_all(output_str.as_bytes());
+                        });
+                    } else {
+                        println!("{}", output_str);
+                    }
+            },
+            Err(e) => println!("{}", e),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct ChildPr<'a> { //a child process spawned by shell
     #[serde(borrow)]
     pub args: Vec<&'a str>,
     //I/O streams for redirection
     pub redirect_in: Option<Redirect<'a>>, // for < operator
-    pub redirect_out: Option<Redirect<'a>>, // for > 
+    pub redirect_out: Option<Redirect<'a>>, // for >, >> 
 
     pub prog_name: &'a str,
     pub heredoc_content: Vec<&'a str>,
@@ -63,81 +108,99 @@ impl<'a> ChildPr<'a> {
         Ok(())
     }
 
-    pub fn spawn(
-        &mut self,
-        stdin: Stdio,
-        stdout: Stdio,
-    ) -> anyhow::Result<process::Child> {
+    pub fn spawn(&mut self, stdin: Stdio, stdout: Stdio) 
+    -> anyhow::Result<process::Child> {
         let mut handle = self.build_cmd();
         handle.stdin(stdin);
         handle.stdout(stdout);
         self.handle_redirect(&mut handle)?;
-        match handle.spawn() {
-            Ok(mut c) => {
-                if !self.heredoc_content.is_empty() {
-                    if let Some(mut stdin_handle) = c.stdin.take() {
-                        for content in self.heredoc_content.iter() {
-                            let _ = stdin_handle.write_all((*content).as_bytes());
-                        }
-                    }
-                }
-                Ok(c)
-            }
-            Err(e) => Err(anyhow!("{}", e)),
-        }
+        let mut c = handle.spawn()?;
+        self.write_heredoc_content(&mut c);
+        Ok(c)
     }
 
     //same as spawn, but will wait for process to finish and collect status
     pub fn status(&mut self) -> anyhow::Result<ExitStatus> {
         let mut handle = self.build_cmd();
         self.handle_redirect(&mut handle)?;
-        match handle.spawn() {
-            Ok(mut c) => {
-                if !self.heredoc_content.is_empty() {
-                    if let Some(mut stdin_handle) = c.stdin.take() {
-                        for content in self.heredoc_content.iter() {
-                            let _ = stdin_handle.write_all((*content).as_bytes());
-                        }
+        let mut c = handle.spawn()?;
+        self.write_heredoc_content(&mut c);
+        Ok(c.wait()?)
+    }
+
+    fn write_heredoc_content(&mut self, c: &mut process::Child) {
+        if !self.heredoc_content.is_empty() {
+            if let Some(mut stdin_handle) = c.stdin.take() {
+                // must clone heredoc contents here, else the 'a str lifetime conflicts with thread
+                // spawn, which requires 'static lifetime
+                // 1. Drain empties the collection (like take) AND iterates over it.
+                // 2. .to_string() converts the &'a str or Cow into an owned String.
+                let heredocs: Vec<String> = self.heredoc_content
+                    .drain(..) 
+                    .map(|content| content.to_string())
+                    .collect();
+                std::thread::spawn(move || {
+                    for content in heredocs.iter() {
+                        let _ = stdin_handle.write_all((*content).as_bytes());
                     }
-                }
-                Ok(c.wait()?)
-            },
-            Err(e) => Err(anyhow!("{}",e)),
+                });
+            }
         }
     }
+}
+
+fn convert_pipe_fds(pipe_w: Option<PipeWriter>, pipe_r: Option<PipeReader>) -> (Stdio, Stdio) {
+    (
+        match pipe_w {
+            None => Stdio::inherit(),
+            Some(w_fd) => Stdio::from(w_fd),
+        },
+        match pipe_r {
+            None => Stdio::inherit(),
+            Some(r_fd) => Stdio::from(r_fd),
+        }
+    )
 }
 
 fn spawn_pipeline(progs: &mut Vec<Box<AstNode>>) -> anyhow::Result<Vec<process::Child>> {
     let num_prog = progs.len();
     let mut children = Vec::with_capacity(num_prog);
-    let mut cur_stdin = Stdio::inherit();
+    let mut cur_pipe_read: Option<PipeReader> = None;
     for (i, prog) in progs.iter_mut().enumerate() {
         let last_child = i == num_prog - 1;
-        let (next_stdin, child_stdout) = if last_child {
-            (Stdio::inherit(), Stdio::inherit())
-        } else {
-            let (pipe_reader, pipe_writer) = io::pipe()?;
-            (Stdio::from(pipe_reader), Stdio::from(pipe_writer))
-        };
+        let (next_pipe_read, cur_pipe_write) = 
+            if last_child {
+                (None, None)
+            } else {
+                let (pipe_reader, pipe_writer) = io::pipe()?;
+                (Some(pipe_reader), Some(pipe_writer))
+            };
         //prog is either a Prog(child_pr) or a Subshell(subsh)
         match &mut **prog {
+            AstNode::Builtin(builtin) => {
+                builtin.exec_builtin(cur_pipe_write, cur_pipe_read);
+            },
             AstNode::Prog(child_pr) => {
-               let child = child_pr.spawn(cur_stdin, child_stdout)?;
-               children.push(child);
+                let (c_stdout, c_stdin) = convert_pipe_fds(cur_pipe_write, cur_pipe_read);
+
+                let child = child_pr.spawn(c_stdin, c_stdout)?;
+                children.push(child);
             },
             AstNode::Subshell(inner_ast) => {
+                let (c_stdout, c_stdin) = convert_pipe_fds(cur_pipe_write, cur_pipe_read);
+
                 let shell_exe = std::env::current_exe()?;
                 let serialized_ast = serde_json::to_string(inner_ast)?;
                 let subsh = Command::new(shell_exe)
                     .env(AS_SUBSHELL, &serialized_ast)
-                    .stdin(cur_stdin)
-                    .stdout(child_stdout)
+                    .stdin(c_stdin)
+                    .stdout(c_stdout)
                     .spawn()?;
                 children.push(subsh);
             },
             _ => return Err(anyhow!("unreachable, pipe can only have Prog or Subshell")),
         }
-        cur_stdin = Stdio::from(next_stdin);
+        cur_pipe_read = next_pipe_read;
     }
     Ok(children)
 }
@@ -145,7 +208,12 @@ fn spawn_pipeline(progs: &mut Vec<Box<AstNode>>) -> anyhow::Result<Vec<process::
 // return the exit code of executing the ast node
 fn dfs(node: &mut Box<AstNode>) -> anyhow::Result<i32> {
     match &mut **node {
+        AstNode::Builtin(builtin) => {
+            builtin.exec_builtin(None, None);
+            return Ok(0);
+        }
         AstNode::Prog(child_pr) => {
+            if child_pr.args.is_empty() { return Ok(0); }
             return Ok(child_pr.status()?
                 .code()
                 .unwrap_or(1));
@@ -175,16 +243,17 @@ fn dfs(node: &mut Box<AstNode>) -> anyhow::Result<i32> {
         AstNode::Pipeline(pipeline) => {
             let mut spawned_children = spawn_pipeline(pipeline)?;
             let mut res = 0;
+            let mut code = 0;
             for c in spawned_children.iter_mut() {
                 if let Ok(exit_stat) = c.wait() {
-                    res = exit_stat.code().unwrap_or(1);
+                    code = exit_stat.code().unwrap_or(1);
                 }
-                if res != 0 { break; } 
+                if code != 0 { res = code; } 
             }
             return Ok(res);
         },
         AstNode::Subshell(inner_ast) => {
-            let shell_path = std::env::current_exe().expect("Failed to get current exe path for subshell");
+            let shell_path = env::current_exe().expect("Failed to get current exe path for subshell");
             let serialized_ast = serde_json::to_string(inner_ast)?;
             let subsh_stat = Command::new(shell_path)
                 .env(AS_SUBSHELL, &serialized_ast)
@@ -196,6 +265,7 @@ fn dfs(node: &mut Box<AstNode>) -> anyhow::Result<i32> {
 
 pub fn execute_cmd_buf<'w> (cmd_buf: &'w str, tkns: &'w [TknSpan], heredocs: VecDeque<&'w str>) -> anyhow::Result<i32> {
     let executables = Parser::new(tkns, heredocs).parse(cmd_buf)?;
+    println!("\nOUTPUT!!");
     execute_ast(executables)
 }
 
@@ -207,9 +277,54 @@ pub fn execute_ast(mut executables: Vec<Box<AstNode>>) -> anyhow::Result<i32> {
     Ok(res)
 }
 
+/* BUILTINS */
+fn pwd(_args: &[&str], _pipe_reader: Option<PipeReader>) -> anyhow::Result<String> { 
+    Ok(format!("{}", env::current_dir().unwrap().display()))
+}
 
+fn set_cwd(args: &[&str], _pipe_reader: Option<PipeReader>) -> anyhow::Result<String> {
+    if args.len() == 1 { //cd 
+        let home = env::home_dir().expect("Couldn't find HOME directory");
+        env::set_current_dir(&home).expect("ERR chdir");
+        return Ok("".to_string());
+    } else if args.len() == 2 { //cd [..]
+        let path_str = args[1];
+        let mut new_cwd = PathBuf::from(Path::new(path_str));
+        if new_cwd.starts_with("~") {
+            new_cwd = expand_tilde(&new_cwd);
+        }
+        env::set_current_dir(&new_cwd)?;
+        return Ok("".to_string());
+    } else if args.len() > 2 {
+        return Err(anyhow!("ERR too many arguments for cd; {} is invalid", args[2]));
+    }
+    Err(anyhow!("unreachable"))
+} 
 
+//TODO: fix
+fn expand_tilde(path: &PathBuf) -> PathBuf {
+    let mut expanded_path = env::home_dir().expect("Couldn't find HOME directory");
+    if path == Path::new("~") {
+        expanded_path
+    } else {
+        expanded_path.push(path.strip_prefix("~").unwrap());
+        expanded_path
+    }
+}
 
-
-
+fn get_history(_args: &[&str], _pipe_reader: Option<PipeReader>) -> anyhow::Result<String> {
+    let mut output = String::new();
+    let hist_len = CMD_HISTORY.with_borrow(|h| h.len());
+    let start = std::cmp::max(0, hist_len - 15);
+    for i in start..hist_len {
+        CMD_HISTORY.with_borrow(|h| 
+            if i != hist_len - 1 {
+                output.push_str(&format!("{}\n", h.get(i).map_or("", |v| v)));
+            } else {
+                output.push_str(h.get(i).map_or("", |v| v));
+            }
+        )
+    }
+    Ok(output)
+}
 

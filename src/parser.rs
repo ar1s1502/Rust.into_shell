@@ -1,5 +1,5 @@
 use crate::lexer::{TknSpan, Tkn, get_token_at};
-use crate::executor::{ChildPr, Redirect, Redir, };
+use crate::executor::{ChildPr, Builtin, Redirect, Redir, get_builtins};
 use std::collections::VecDeque;
 use std::iter::{Peekable};
 use std::slice::Iter;
@@ -26,6 +26,8 @@ pub enum AstNode<'a> {
     Pipeline(Vec<Box<AstNode<'a>>>),
 
     Subshell(Vec<Box<AstNode<'a>>>),
+
+    Builtin(Builtin<'a>),
 }
 
 pub struct Parser<'a>
@@ -109,11 +111,19 @@ impl<'a> Parser<'a> {
                     return self.subshell(cmd_buf);
                 }
                 /* program delimiters */
-                Tkn::Newline | Tkn::CmdOr | Tkn::Pipe | Tkn::CmdAnd | Tkn::Semicolon | Tkn::RParen => {
+                Tkn::Newline | Tkn::Semicolon | Tkn::CmdOr | Tkn::CmdAnd | Tkn::RParen | Tkn::Pipe => {
                     if args.is_empty() { 
                         return Err(anyhow!("Syntax Err: empty args"));
                     }
                     println!("args from parser: {:?}", args);
+                    //if args[0] is a builtin command, then return astnode::builtin
+                    if get_builtins().get(args[0]).is_some() {
+                        return Ok(Box::new(AstNode::Builtin(Builtin {
+                            args,
+                            redirect_in,
+                            redirect_out,
+                        })));
+                    }
                     return Ok(Box::new(AstNode::Prog(ChildPr {
                         prog_name: args[0],
                         args: args,
@@ -130,24 +140,27 @@ impl<'a> Parser<'a> {
 
     fn subshell(&mut self, cmd_buf: &'a str) -> anyhow::Result<Box<AstNode<'a>>> {
         let mut subsh = Vec::new();
-        loop {
-            self.ignore_next_newlines();
-            println!("cur tkn: {}", self.cur_tkn.unwrap().kind);
-            if self.tkns.peek().map_or(false, |t| t.kind == Tkn::RParen) { 
-                self.eat(Tkn::RParen)?;
-                return Ok(Box::new(AstNode::Subshell(subsh)));
-            }
+        while self.cur_tkn.map_or(false, |t| t.kind != Tkn::RParen) {
             subsh.push(self.build_ast(cmd_buf)?);
+            //build ast stops at a newline, semicolon, or rparen
+            if self.cur_tkn.map_or(false, |t| t.kind == Tkn::RParen) { break; }
+            self.ignore_next_program_delims();
+            if self.tkns.peek().map_or(false, |t| t.kind == Tkn::RParen) { 
+                //found the closing paren for subshell
+                self.eat(Tkn::RParen)?;
+            }
         }
+        Ok(Box::new(AstNode::Subshell(subsh)))
     }
 
     fn build_pipeline(&mut self, cmd_buf: &'a str) -> anyhow::Result<Box<AstNode<'a>>> {
         let mut node = self.expr(cmd_buf)?;
-
         if self.cur_tkn.map_or(false, |tkn| tkn.kind == Tkn::Pipe) {
             let mut pipeline = vec![node];
             while let Some(tkn) = self.cur_tkn {
                 if tkn.kind != Tkn::Pipe { break; }
+                self.ignore_next_program_delims();
+                println!("cur tkn: {}", self.cur_tkn.unwrap().kind);
                 node = self.expr(cmd_buf)?;
                 pipeline.push(node);
             }
@@ -180,8 +193,8 @@ impl<'a> Parser<'a> {
 
     pub fn parse(&mut self, cmd_buf: &'a str) -> anyhow::Result<Vec<Box<AstNode<'a>>>> {
         let mut executables = Vec::new();
-        self.ignore_next_newlines();
-        while !self.tkns.peek().is_none() {
+        self.ignore_next_program_delims();
+        while self.tkns.peek().is_some() {
             let node = self.build_ast(cmd_buf)?;
             if self.cur_tkn.is_none() {
                 //this shouldn't be reachable but just in case
@@ -191,7 +204,7 @@ impl<'a> Parser<'a> {
             match tkn.kind {
                 Tkn::Newline | Tkn::Semicolon | Tkn::RParen => {
                     executables.push(node);
-                    self.ignore_next_newlines();
+                    self.ignore_next_program_delims();
                 }
                 _ => return Err(anyhow!("Syntax Err:\nwhile parsing, expected '\\n', ';', or ')', but got '{}'", tkn.kind)),
             }
@@ -199,13 +212,11 @@ impl<'a> Parser<'a> {
         Ok(executables)
     }
 
-    fn ignore_next_newlines(&mut self) {
+    fn ignore_next_program_delims(&mut self) {
         while let Some(tkn) = self.tkns.peek() {
-            if tkn.kind == Tkn::Newline { 
-                self.tkns.next(); 
-            } else {
-                break;
-            }
+            if [Tkn::Newline, Tkn::Semicolon,].contains(&tkn.kind) {
+                self.advance();
+            } else { break; }
         }
     }
 
