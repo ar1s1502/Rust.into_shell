@@ -7,13 +7,10 @@ use executor::{execute_cmd_buf, execute_ast};
 use logos::{Logos, };
 use rustyline::{DefaultEditor};
 use rustyline::error::ReadlineError;
-use rustyline::history::{History, SearchDirection};
 use std::{env, process};
-//use std::path::{Path, PathBuf};
-use std::io::Write;
+use std::io::{Write, };
 use std::collections::VecDeque;
 use std::cell::{RefCell};
-use anyhow::anyhow;
 use std::time::Duration;
 use std::thread;
 
@@ -21,7 +18,7 @@ const HISTORY_PATH: &str = "rust_shell_history.txt";
 pub const AS_SUBSHELL: &str = "--as-subshell";
 
 thread_local! {
-    pub static CMD_HISTORY: RefCell<Vec<String>> = RefCell::new(Vec::new()); 
+    pub static RL_EDITOR: RefCell<DefaultEditor> = RefCell::new(DefaultEditor::new().expect("failed to initiate default editor"));
 }
 
 /* 
@@ -56,29 +53,21 @@ fn main() -> rustyline::Result<()> {
     }
     //else, this is running in the foreground, do REPL 
     send_osc133(CMD_OUTPUT_START);
-    let mut rl = DefaultEditor::new()?;
-    if let Err(e) = load_history(&mut rl) {
-        println!("{}", e);
-    } else {
-        for i in 0..rl.history().len() {
-            CMD_HISTORY.with_borrow_mut(|h| 
-                h.push(rl.history().get(i, SearchDirection::Forward).unwrap().unwrap()
-                    .entry.to_string())
-            )
-        }
-    }
+    load_history()?;
+    send_osc133(CMD_END);
     let mut cmd_buf = String::new();
     let mut prompt = String::new();
-    send_osc133(CMD_END);
     set_normal_prompt(&mut prompt,);
     loop {
         //sleep fixes a weird race condition where sometimes the promptline prints before the output
         //on the cat << A | cat << B | cat << C test case
         thread::sleep(Duration::from_millis(2)); 
-        match rl.readline(&prompt) {
+        let readline_res = RL_EDITOR.with_borrow_mut(|rl| {
+            rl.readline(&prompt)
+        });
+        match readline_res {
             Ok(input) => {
                 if input.trim().is_empty() { continue; }
-                if input.trim().to_lowercase() == "exit" { exit_shell(&mut rl); };
                 cmd_buf.push_str(&input);
                 cmd_buf.push('\n'); //add back newline that readline stripped after user hit Enter
                 let lex_state = LexerState::new();
@@ -94,8 +83,9 @@ fn main() -> rustyline::Result<()> {
                         send_osc133(CMD_END);
                         set_normal_prompt(&mut prompt,);
                         //Add to history
-                        let _ = rl.add_history_entry(cmd_buf.trim());
-                        CMD_HISTORY.with_borrow_mut(|h| h.push(cmd_buf.trim().to_string()));
+                        let _ = RL_EDITOR.with_borrow_mut(|rl| {
+                            rl.add_history_entry(cmd_buf.trim())
+                        });
                         cmd_buf.clear();
                     },
                     None => {
@@ -106,7 +96,9 @@ fn main() -> rustyline::Result<()> {
                             println!("Syntax ERR: {}", err);
                             send_osc133(CMD_END);
                             set_normal_prompt(&mut prompt,);
-                            let _  = rl.add_history_entry(cmd_buf.trim());
+                            let _ = RL_EDITOR.with_borrow_mut(|rl| {
+                                rl.add_history_entry(cmd_buf.trim())
+                            });
                             cmd_buf.clear();
                         } else if let Some(ref closer) = lex.extras.expected_closer {
                             set_expected_closer_prompt(&mut prompt, closer);
@@ -176,36 +168,25 @@ fn send_osc133(data: &str) {
     let _ = std::io::stdout().flush();
 }
 
-fn save_history(rl: &mut DefaultEditor) -> anyhow::Result<String> {
-    if let Some(path) = env::home_dir() {
-        let save_path = path.join(HISTORY_PATH);
-        if rl.history_mut().save(save_path.as_path()).is_err() {
-            return Err(anyhow!("Failed to save history"));
-        } else {
-            return Ok(format!("{}", save_path.display()));
-        }
-    } else { 
-        return Err(anyhow!("Failed to save history"));
-    }
+fn save_history() -> anyhow::Result<String> {
+    let save_path = env::home_dir().unwrap().join(HISTORY_PATH);
+    RL_EDITOR.with_borrow_mut(|rl| {
+        rl.save_history(&save_path)
+    })?;
+    Ok(format!("{}", save_path.display()))
 }
 
-fn load_history(rl: &mut DefaultEditor) -> anyhow::Result<()> {
-    if let Some(path) = env::home_dir() {
-        let save_path = path.join(HISTORY_PATH);
-        if rl.history_mut().load(save_path.as_path()).is_err() {
-            return Err(anyhow!("Failed to load history"));
-        } else {
-            return Ok(());
-        }
-    } else { 
-        return Err(anyhow!("Failed to load history"));
-    }
+fn load_history() -> rustyline::Result<()> {
+    let save_path = env::home_dir().unwrap().join(HISTORY_PATH);
+    RL_EDITOR.with_borrow_mut(|rl| {
+        rl.load_history(&save_path)
+    })
 }
 
-fn exit_shell(rl: &mut DefaultEditor) {
+pub fn exit_shell(_args: &[&str], _pipe_reader: Option<std::io::PipeReader>) -> anyhow::Result<String> {
     send_osc133(CMD_OUTPUT_START);
     println!("exiting shell...");
-    match save_history(rl) {
+    match save_history() {
         Ok(save_path) => println!("shell command history saved to {}", save_path),
         Err(e) => println!("ERR: {}", e),
     }

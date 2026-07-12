@@ -1,6 +1,6 @@
 use crate::parser::{AstNode, Parser};
 use crate::lexer::{TknSpan, Tkn};
-use crate::{AS_SUBSHELL, CMD_HISTORY};
+use crate::{AS_SUBSHELL, RL_EDITOR, exit_shell};
 use serde::{Deserialize, Serialize};
 use std::collections::{VecDeque, HashMap};
 use std::process::{Command, Stdio, ExitStatus};
@@ -11,6 +11,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use anyhow::anyhow;
+use rustyline::history::{History, SearchDirection};
 
 type BuiltinFn = fn(&[&str], Option<PipeReader>) -> anyhow::Result<String>;
 
@@ -22,6 +23,7 @@ pub fn get_builtins() -> &'static HashMap<&'static str, BuiltinFn> {
             ("pwd", pwd as BuiltinFn),
             ("cd", set_cwd),
             ("history", get_history),
+            ("exit", exit_shell),
         ])
     })
 }
@@ -46,6 +48,7 @@ pub struct Builtin<'a> { //built in command
     //I/O streams for redirection
     pub redirect_in: Option<Redirect<'a>>,  // for < operator
     pub redirect_out: Option<Redirect<'a>>, // for >, >>
+                                            
     //pub heredoc_content: Vec<'a str>, 
 }
 
@@ -54,13 +57,13 @@ impl<'a> Builtin<'a> {
         let builtin_fn = get_builtins().get(self.args[0]).unwrap(); //unwrap safe because parser checks if in builtins
         match builtin_fn(&self.args, pipe_read) {
             Ok(output_str) => {
-                    if let Some(mut pipe_writer) = pipe_write {
-                        std::thread::spawn(move || {
-                            let _ = pipe_writer.write_all(output_str.as_bytes());
-                        });
-                    } else {
-                        println!("{}", output_str);
-                    }
+                if let Some(mut pipe_writer) = pipe_write {
+                    std::thread::spawn(move || {
+                        let _ = pipe_writer.write_all(output_str.as_bytes());
+                    });
+                } else {
+                    println!("{}", output_str);
+                }
             },
             Err(e) => println!("{}", e),
         }
@@ -80,40 +83,13 @@ pub struct ChildPr<'a> { //a child process spawned by shell
 }
 
 impl<'a> ChildPr<'a> {
-    fn build_cmd(&self) -> std::process::Command {
-        let mut cmd = std::process::Command::new(self.args[0]);
-        cmd.args(&self.args[1..]); 
-        cmd
-    }
-
-    fn handle_redirect(&self, handle: &mut Command) -> anyhow::Result<()> {
-        if let Some(ref infile) = self.redirect_in {
-            handle.stdin(Stdio::from(File::open(infile.file)?));
-        } 
-        if !self.heredoc_content.is_empty() {
-            handle.stdin(Stdio::piped());
-        }
-
-        if let Some(ref outfile) = self.redirect_out {
-            match outfile.dir {
-                Redir::Out => { handle.stdout(Stdio::from(File::create(outfile.file)?)); },
-                Redir::Append => { handle.stdout(Stdio::from(OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open(outfile.file)?)); 
-                },
-                _ => return Err(anyhow!("unreachable")),
-            }
-        }
-        Ok(())
-    }
-
     pub fn spawn(&mut self, stdin: Stdio, stdout: Stdio) 
     -> anyhow::Result<process::Child> {
-        let mut handle = self.build_cmd();
+        let mut handle = Command::new(self.args[0]);
+        handle.args(&self.args[1..]); 
         handle.stdin(stdin);
         handle.stdout(stdout);
-        self.handle_redirect(&mut handle)?;
+        self.apply_redirect(&mut handle)?;
         let mut c = handle.spawn()?;
         self.write_heredoc_content(&mut c);
         Ok(c)
@@ -121,10 +97,7 @@ impl<'a> ChildPr<'a> {
 
     //same as spawn, but will wait for process to finish and collect status
     pub fn status(&mut self) -> anyhow::Result<ExitStatus> {
-        let mut handle = self.build_cmd();
-        self.handle_redirect(&mut handle)?;
-        let mut c = handle.spawn()?;
-        self.write_heredoc_content(&mut c);
+        let mut c = self.spawn(Stdio::inherit(), Stdio::inherit())?;
         Ok(c.wait()?)
     }
 
@@ -147,8 +120,31 @@ impl<'a> ChildPr<'a> {
             }
         }
     }
+
+    fn apply_redirect(&self, handle: &mut Command) -> anyhow::Result<()> {
+        if let Some(ref infile) = self.redirect_in {
+            handle.stdin(Stdio::from(File::open(infile.file)?));
+        } 
+        if !self.heredoc_content.is_empty() {
+            handle.stdin(Stdio::piped());
+        }
+        if let Some(ref outfile) = self.redirect_out {
+            match outfile.dir {
+                Redir::Out => { handle.stdout(Stdio::from(File::create(outfile.file)?)); },
+                Redir::Append => { handle.stdout(Stdio::from(OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(outfile.file)?)); 
+                },
+                _ => return Err(anyhow!("unreachable")),
+            }
+        }
+        Ok(())
+    }
+
 }
 
+//convert std::io::PipeWriter/Reader to std::process::Stdio
 fn convert_pipe_fds(pipe_w: Option<PipeWriter>, pipe_r: Option<PipeReader>) -> (Stdio, Stdio) {
     (
         match pipe_w {
@@ -242,15 +238,19 @@ fn dfs(node: &mut Box<AstNode>) -> anyhow::Result<i32> {
         },
         AstNode::Pipeline(pipeline) => {
             let mut spawned_children = spawn_pipeline(pipeline)?;
-            let mut res = 0;
             let mut code = 0;
-            for c in spawned_children.iter_mut() {
+            for (i, c) in spawned_children.iter_mut().enumerate() {
                 if let Ok(exit_stat) = c.wait() {
                     code = exit_stat.code().unwrap_or(1);
                 }
-                if code != 0 { res = code; } 
+                if code != 0 {  //pipe fail
+                    for c in spawned_children[i..].iter_mut() {
+                        c.kill()?; //kill the remaining children zombies
+                    }
+                    return Ok(code);
+                } 
             }
-            return Ok(res);
+            return Ok(0);
         },
         AstNode::Subshell(inner_ast) => {
             let shell_path = env::current_exe().expect("Failed to get current exe path for subshell");
@@ -284,8 +284,8 @@ fn pwd(_args: &[&str], _pipe_reader: Option<PipeReader>) -> anyhow::Result<Strin
 
 fn set_cwd(args: &[&str], _pipe_reader: Option<PipeReader>) -> anyhow::Result<String> {
     if args.len() == 1 { //cd 
-        let home = env::home_dir().expect("Couldn't find HOME directory");
-        env::set_current_dir(&home).expect("ERR chdir");
+        let home = env::home_dir().expect("ERR cd: Couldn't find HOME directory");
+        env::set_current_dir(&home)?;
         return Ok("".to_string());
     } else if args.len() == 2 { //cd [..]
         let path_str = args[1];
@@ -296,7 +296,7 @@ fn set_cwd(args: &[&str], _pipe_reader: Option<PipeReader>) -> anyhow::Result<St
         env::set_current_dir(&new_cwd)?;
         return Ok("".to_string());
     } else if args.len() > 2 {
-        return Err(anyhow!("ERR too many arguments for cd; {} is invalid", args[2]));
+        return Err(anyhow!("ERR cd: too many arguments for cd; {} is invalid", args[2]));
     }
     Err(anyhow!("unreachable"))
 } 
@@ -314,16 +314,17 @@ fn expand_tilde(path: &PathBuf) -> PathBuf {
 
 fn get_history(_args: &[&str], _pipe_reader: Option<PipeReader>) -> anyhow::Result<String> {
     let mut output = String::new();
-    let hist_len = CMD_HISTORY.with_borrow(|h| h.len());
+    let hist_len = RL_EDITOR.with_borrow(|h| h.history().len());
     let start = std::cmp::max(0, hist_len - 15);
     for i in start..hist_len {
-        CMD_HISTORY.with_borrow(|h| 
+        RL_EDITOR.with_borrow(|rl| {
+            let entry = rl.history().get(i, SearchDirection::Forward).unwrap().unwrap().entry;
             if i != hist_len - 1 {
-                output.push_str(&format!("{}\n", h.get(i).map_or("", |v| v)));
+                output.push_str(&format!("{}\n", entry));
             } else {
-                output.push_str(h.get(i).map_or("", |v| v));
+                output.push_str(&entry);
             }
-        )
+        })
     }
     Ok(output)
 }
