@@ -2,14 +2,17 @@ mod lexer;
 mod parser;
 mod executor;
 
+#[cfg(test)]
+mod unit_tests;
+
 use lexer::{Tkn, TknSpan, lex_cmd_buf, LexerState};
 use executor::{execute_cmd_buf, execute_ast};
 use logos::{Logos, };
 use rustyline::{DefaultEditor};
 use rustyline::error::ReadlineError;
 use std::{env, process};
-use std::io::{Write, };
-use std::collections::VecDeque;
+use std::io::{Write, self, IsTerminal};
+use std::collections::{VecDeque, HashMap};
 use std::cell::{RefCell};
 use std::time::Duration;
 use std::thread;
@@ -17,10 +20,28 @@ use std::thread;
 const HISTORY_PATH: &str = "rust_shell_history.txt"; 
 pub const AS_SUBSHELL: &str = "--as-subshell";
 
-thread_local! {
-    pub static RL_EDITOR: RefCell<DefaultEditor> = RefCell::new(DefaultEditor::new().expect("failed to initiate default editor"));
+struct ShellState {
+    pub debug: bool,
+    pub tty: bool,
+    pub vars: HashMap<String, String>,
 }
 
+thread_local! {
+    pub static RL_EDITOR: RefCell<DefaultEditor> = RefCell::new(DefaultEditor::new().expect("failed to initiate default editor"));
+
+    pub static SHELL_STATE: RefCell<ShellState> = RefCell::new(ShellState {
+        debug: false,
+        tty: io::stdout().is_terminal() && io::stdin().is_terminal(),
+        vars: HashMap::new(),
+    });
+}
+
+pub fn is_debug() -> bool {
+    SHELL_STATE.with_borrow(|s| {s.debug})
+}
+fn is_tty() -> bool {
+    SHELL_STATE.with_borrow(|s| {s.tty})
+}
 /* 
 OSC Escape sequence's data so that frontend typescript can differentiate between shell outputs
 OSC 133 syntax: \x1b]133;${data}\x07
@@ -32,17 +53,20 @@ const PROMPT_END: &str = "B";
 const CMD_OUTPUT_START: &str = "C";
 const CMD_END: &str = "D";
 
+//only if --debug flag set
 fn print_cmd<'a> (tkns: &'a [TknSpan], heredocs: &VecDeque<&'a str>) {
     for tkn in tkns.iter() {
         println!("{:?}, {:?}", tkn.kind, tkn.span);
     }
-    println!("heredocs: {:?}", heredocs);
+    if !heredocs.is_empty() {
+        println!("heredocs: {:?}", heredocs);
+    }
 }
 
 fn main() -> rustyline::Result<()> {
     //check if this process is running as a subshell
     //TODO: add cryptography to ensure that the subshell really spawned by shell
-    if let Ok(serialized_ast) = std::env::var(AS_SUBSHELL) {
+    if let Ok(serialized_ast) = env::var(AS_SUBSHELL) {
         let parsed_ast = serde_json::from_str(&serialized_ast).unwrap_or_else(|_| {
             process::exit(1);
         });
@@ -51,6 +75,19 @@ fn main() -> rustyline::Result<()> {
             Err(_) => process::exit(1),
         }
     }
+    
+    /* Flags */
+    for (i, arg) in env::args().enumerate() {
+        if i == 0 { continue; }//skip the program name 
+        match arg.as_ref() {
+            "-d" | "--debug" => SHELL_STATE.with_borrow_mut(|s| s.debug = true),
+            _ => {
+                eprintln!("unsupported flag {}", arg);
+                process::exit(1);
+            },
+        }
+    }
+
     //else, this is running in the foreground, do REPL 
     send_osc133(CMD_OUTPUT_START);
     load_history()?;
@@ -76,7 +113,7 @@ fn main() -> rustyline::Result<()> {
                     Some((tkns, heredocs)) => {
                         send_osc133(PROMPT_END);
                         send_osc133(CMD_OUTPUT_START);
-                        print_cmd(&tkns, &heredocs);
+                        if is_debug() { print_cmd(&tkns, &heredocs); }
                         if let Err(e) = execute_cmd_buf(&cmd_buf, &tkns, heredocs) {
                             println!("ERR: {}", e);
                         }
@@ -111,20 +148,25 @@ fn main() -> rustyline::Result<()> {
                 }
             },
             Err(ReadlineError::Interrupted) => {
-                send_osc133(PROMPT_END);
-                println!("CTRL-C");
+                if is_tty() {
+                    send_osc133(PROMPT_END);
+                    println!("CTRL-C");
+                }
                 set_normal_prompt(&mut prompt,);
                 cmd_buf.clear();
             },
             Err(ReadlineError::Eof) => {
-                send_osc133(PROMPT_END);
-                println!("CTRL-D");
+                if is_tty() {
+                    send_osc133(PROMPT_END);
+                    println!("CTRL-D");
+                }
                 set_normal_prompt(&mut prompt,);
-                cmd_buf.clear();
+                let _ = exit_shell(&[""], None);
             },
             Err(err) => {
                 send_osc133(PROMPT_END);
-                println!("ERR: {:?}", err);
+                eprintln!("ERR: {:?}", err);
+                let _ = exit_shell(&[""], None);
             },
         }
     }
@@ -159,13 +201,15 @@ fn set_expected_closer_prompt(prompt: &mut String, closer: &str) {
         ")" => *prompt = String::from("subsh> "),
         _ => *prompt = format!("missing {} for heredoc> ", closer),
     }
-    send_osc133(&format!("{};{}", PROMPT_START, prompt));
+    send_osc133(&format!("{};{}", PROMPT_START, prompt))
 } 
 
 fn send_osc133(data: &str) {
-    print!("\x1b]133;{}\x07", data);
-    //flush because stdout might buffer until newline
-    let _ = std::io::stdout().flush();
+    if is_tty() {
+        print!("\x1b]133;{}\x07", data);
+        //flush because stdout might buffer until newline
+        let _ = std::io::stdout().flush();
+    }
 }
 
 fn save_history() -> anyhow::Result<String> {
@@ -184,11 +228,13 @@ fn load_history() -> rustyline::Result<()> {
 }
 
 pub fn exit_shell(_args: &[&str], _pipe_reader: Option<std::io::PipeReader>) -> anyhow::Result<String> {
-    send_osc133(CMD_OUTPUT_START);
-    println!("exiting shell...");
+    if is_tty() {
+        send_osc133(CMD_OUTPUT_START);
+        println!("exiting shell...");
+    }
     match save_history() {
-        Ok(save_path) => println!("shell command history saved to {}", save_path),
-        Err(e) => println!("ERR: {}", e),
+        Ok(save_path) => if is_tty() { println!("shell command history saved to {}", save_path); },
+        Err(e) => eprintln!("ERR: {}", e),
     }
     process::exit(0);
 }

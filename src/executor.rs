@@ -1,12 +1,12 @@
 use crate::parser::{AstNode, Parser};
 use crate::lexer::{TknSpan, Tkn};
-use crate::{AS_SUBSHELL, RL_EDITOR, exit_shell};
+use crate::{AS_SUBSHELL, RL_EDITOR, is_debug, exit_shell};
 use serde::{Deserialize, Serialize};
 use std::collections::{VecDeque, HashMap};
-use std::process::{Command, Stdio, ExitStatus};
+use std::process::{Command, ExitStatus, Stdio};
 use std::process;
-use std::fs::{File, OpenOptions};
-use std::io::{Write, self, PipeReader, PipeWriter};
+use std::fs::{File, OpenOptions, };
+use std::io::{Write, self, PipeReader, PipeWriter, Read};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -28,17 +28,18 @@ pub fn get_builtins() -> &'static HashMap<&'static str, BuiltinFn> {
     })
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, )]
 pub enum Redir {
     In,
     Out,
     Append,
+    Heredoc,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct Redirect<'a> {
+#[derive(Serialize, Deserialize, )]
+pub struct Redirect {
     pub dir: Redir,
-    pub file: &'a str,
+    pub file: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -46,8 +47,8 @@ pub struct Builtin<'a> { //built in command
     #[serde(borrow)]
     pub args: Vec<&'a str>,
     //I/O streams for redirection
-    pub redirect_in: Option<Redirect<'a>>,  // for < operator
-    pub redirect_out: Option<Redirect<'a>>, // for >, >>
+    pub redirect_ins: Vec<Redirect>,
+    pub redirect_outs: Vec<Redirect>,
                                             
     //pub heredoc_content: Vec<'a str>, 
 }
@@ -75,11 +76,11 @@ pub struct ChildPr<'a> { //a child process spawned by shell
     #[serde(borrow)]
     pub args: Vec<&'a str>,
     //I/O streams for redirection
-    pub redirect_in: Option<Redirect<'a>>, // for < operator
-    pub redirect_out: Option<Redirect<'a>>, // for >, >> 
+    pub redirect_ins: Vec<Redirect>,
+    pub redirect_outs: Vec<Redirect>,
 
     pub prog_name: &'a str,
-    pub heredoc_content: Vec<&'a str>,
+    pub heredoc_contents: VecDeque<String>,
 }
 
 impl<'a> ChildPr<'a> {
@@ -89,10 +90,7 @@ impl<'a> ChildPr<'a> {
         handle.args(&self.args[1..]); 
         handle.stdin(stdin);
         handle.stdout(stdout);
-        self.apply_redirect(&mut handle)?;
-        let mut c = handle.spawn()?;
-        self.write_heredoc_content(&mut c);
-        Ok(c)
+        self.apply_redirect(&mut handle)
     }
 
     //same as spawn, but will wait for process to finish and collect status
@@ -101,45 +99,71 @@ impl<'a> ChildPr<'a> {
         Ok(c.wait()?)
     }
 
-    fn write_heredoc_content(&mut self, c: &mut process::Child) {
-        if !self.heredoc_content.is_empty() {
-            if let Some(mut stdin_handle) = c.stdin.take() {
-                // must clone heredoc contents here, else the 'a str lifetime conflicts with thread
-                // spawn, which requires 'static lifetime
-                // 1. Drain empties the collection (like take) AND iterates over it.
-                // 2. .to_string() converts the &'a str or Cow into an owned String.
-                let heredocs: Vec<String> = self.heredoc_content
-                    .drain(..) 
-                    .map(|content| content.to_string())
-                    .collect();
-                std::thread::spawn(move || {
-                    for content in heredocs.iter() {
-                        let _ = stdin_handle.write_all((*content).as_bytes());
+    //spawn the child process, apply any redirect operators (<, <<, >, >>)
+    fn apply_redirect(&mut self, handle: &mut process::Command) -> anyhow::Result<process::Child> {
+        if !self.redirect_ins.is_empty() { handle.stdin(Stdio::piped()); };
+        if !self.redirect_outs.is_empty() { handle.stdout(Stdio::piped()); };
+        let mut c = handle.spawn()?;
+        if !self.redirect_ins.is_empty() {
+            let mut stdin_handle = c.stdin.take().expect("Failed to take child stdin handle");
+            let redirects = std::mem::take(&mut self.redirect_ins);
+            let mut heredocs = std::mem::take(&mut self.heredoc_contents);
+            std::thread::spawn(move || {
+                for r in redirects.into_iter() {
+                    match r.dir {
+                        Redir::Heredoc => { 
+                            if let Some(ref content) = heredocs.pop_front() { 
+                                //write_all is fine because different thread 
+                                let _ = stdin_handle.write_all(content.as_bytes());
+                            }
+                        },
+                        Redir::In => {
+                            if let Ok(mut f) = File::open(&r.file) {
+                                //write to child stdin in chunks until f's eof
+                                let _ = std::io::copy(&mut f, &mut stdin_handle);
+                            }
+                        }
+                        _ => (),
                     }
-                });
-            }
+                }
+            });
         }
-    }
+        if !self.redirect_outs.is_empty() {
+            let mut stdout_handle = c.stdout.take().expect("Failed to take child stdout handle");
+            let redirects = std::mem::take(&mut self.redirect_outs);
+            let mut outfiles = Vec::new();
+            //create/open all outfiles. (this happens even if command stdout is never written to)
+            for r in redirects.iter() {
+                match r.dir {
+                    Redir::Out => outfiles.push(OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        .truncate(true)
+                        .open(&r.file)?), //This should be equivalent to File::create
+                    Redir::Append => outfiles.push(OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&r.file)?),
+                    _ => anyhow::bail!("unreachable: got redirect in while executing redirect out"),
+                }
+            }
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 5*(1<<10)];
+                loop {
+                    match stdout_handle.read(&mut buf) {
+                        Ok(0) => break, //EOF
+                        Ok(n) => {
+                            for f in outfiles.iter_mut() {
+                                let _ = f.write_all(&buf[..n]);
+                            }
+                        },
+                        Err(_) => break, 
+                    }
+                }
+            });            
+        }
 
-    fn apply_redirect(&self, handle: &mut Command) -> anyhow::Result<()> {
-        if let Some(ref infile) = self.redirect_in {
-            handle.stdin(Stdio::from(File::open(infile.file)?));
-        } 
-        if !self.heredoc_content.is_empty() {
-            handle.stdin(Stdio::piped());
-        }
-        if let Some(ref outfile) = self.redirect_out {
-            match outfile.dir {
-                Redir::Out => { handle.stdout(Stdio::from(File::create(outfile.file)?)); },
-                Redir::Append => { handle.stdout(Stdio::from(OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open(outfile.file)?)); 
-                },
-                _ => return Err(anyhow!("unreachable")),
-            }
-        }
-        Ok(())
+        Ok(c) 
     }
 
 }
@@ -238,17 +262,17 @@ fn dfs(node: &mut Box<AstNode>) -> anyhow::Result<i32> {
         },
         AstNode::Pipeline(pipeline) => {
             let mut spawned_children = spawn_pipeline(pipeline)?;
-            let mut code = 0;
+            if spawned_children.is_empty() { return Ok(0); }
+            let last = spawned_children.len() - 1;
             for (i, c) in spawned_children.iter_mut().enumerate() {
-                if let Ok(exit_stat) = c.wait() {
-                    code = exit_stat.code().unwrap_or(1);
-                }
-                if code != 0 {  //pipe fail
-                    for c in spawned_children[i..].iter_mut() {
-                        c.kill()?; //kill the remaining children zombies
+                if i == last {
+                    if let Ok(exit_stat) = c.wait() {
+                        return Ok(exit_stat.code().unwrap_or(1));
                     }
-                    return Ok(code);
-                } 
+                    return Ok(1)
+                } else {
+                    let _ = c.wait();
+                }
             }
             return Ok(0);
         },
@@ -264,8 +288,8 @@ fn dfs(node: &mut Box<AstNode>) -> anyhow::Result<i32> {
 }
 
 pub fn execute_cmd_buf<'w> (cmd_buf: &'w str, tkns: &'w [TknSpan], heredocs: VecDeque<&'w str>) -> anyhow::Result<i32> {
-    let executables = Parser::new(tkns, heredocs).parse(cmd_buf)?;
-    println!("\nOUTPUT!!");
+    let executables = Parser::new(tkns, heredocs, cmd_buf).parse()?;
+    if is_debug() { println!("\nOUTPUT!!"); }
     execute_ast(executables)
 }
 
@@ -312,8 +336,17 @@ fn expand_tilde(path: &PathBuf) -> PathBuf {
     }
 }
 
-fn get_history(_args: &[&str], _pipe_reader: Option<PipeReader>) -> anyhow::Result<String> {
+fn get_history(args: &[&str], _pipe_reader: Option<PipeReader>) -> anyhow::Result<String> {
     let mut output = String::new();
+    if args.len() > 1 { 
+        match args[1].to_lowercase().as_ref() {
+            "clear" => {
+                let success = RL_EDITOR.with_borrow_mut(|rl| { rl.history_mut().clear() }).is_ok();
+                if success { return Ok("command history cleared".to_string()) } else { return Err(anyhow!("Failed to clear history")) }
+            }
+            _ => return Err(anyhow!("unrecognized history parameter {}", args[1])),
+        };
+    }
     let hist_len = RL_EDITOR.with_borrow(|h| h.history().len());
     let start = std::cmp::max(0, hist_len - 15);
     for i in start..hist_len {

@@ -1,3 +1,5 @@
+use crate::is_debug;
+
 use logos::{Logos, Lexer, SpannedIter };
 use std::collections::VecDeque;
 use std::ops::Range;
@@ -132,7 +134,7 @@ fn redirect_callback(lex: &mut Lexer<Tkn>) -> bool {
     success
 }
 
-//handles |, ||, &&, and \
+//handles |, ||, &&, and 
 fn operator_callback(lex: &mut Lexer<Tkn>) -> Option<()> {
     let mut delim_lex = lex.clone().morph::<TargetDelim>();
     let operator = delim_lex.slice();
@@ -197,7 +199,7 @@ fn bracket_callback(lex: &mut Lexer<Tkn>) -> bool {
 }
 
 //returns a VecDeque of heredocs (if any) to be handed to the parser
-fn newline_handler(lex: &mut Lexer<Tkn>) -> Option<()> {
+fn newline_handler(lex: &mut Lexer<Tkn>) -> bool { 
     let mut heredoc_start = lex.span().end; //heredoc (if any) starts right after the newline
     let mut heredoc_end = lex.span().end;
     let mut heredoc_lex = lex.clone().morph::<HeredocTkn>();
@@ -226,16 +228,16 @@ fn newline_handler(lex: &mut Lexer<Tkn>) -> Option<()> {
         } else { //we have to poll for more input from shell
             heredoc_lex.extras.expected_closer = Some(delim);
             *lex = heredoc_lex.morph();
-            return None;        
+            return false;        
         }
     }
 
-    //set the span of Tkn lexer to match the whole quoted string content
+    //set the span of Tkn lexer to match the whole heredoc content
     let num_read_bytes = lex.remainder().len() - heredoc_lex.remainder().len();
     lex.bump(num_read_bytes); 
 
     lex.extras = heredoc_lex.extras;
-    Some(())
+    true
 }
 
 #[derive(Logos, Debug, PartialEq, Clone)]
@@ -329,17 +331,18 @@ pub fn lex_cmd_buf<'a> (span_iter: &mut SpannedIter<'a, Tkn>, cmd_buf: &'a str) 
     for (res, span) in &mut *span_iter {
         match res {
             Ok(tkn) => {
-                match tkn {
-                    Tkn::Newline => println!(),
-                    Tkn::Quote(ref quote_content) => {
-                        print!("tkn: '{}'; ", quote_content);
-                    },
-                    _ => print!("tkn: '{}'; ", &cmd_buf[span.start..span.end]),
+                if is_debug() {
+                    match tkn {
+                        Tkn::Newline => println!(),
+                        Tkn::Quote(ref quote_content) => {
+                            print!("tkn: '{}'; ", quote_content);
+                        },
+                        _ => print!("tkn: '{}'; ", &cmd_buf[span.start..span.end]),
+                    }
                 }
                 tkns.push(TknSpan {kind: tkn, span});
             },
             Err(_) => {
-                println!();
                 return None;
             }
         }
