@@ -1,54 +1,124 @@
-Shell program in pure Rust, with a frontend/GUI interface using Tauri, HTML/Tailwind/TS + xterm.js
-The shell program can run as a standalone in a terminal emulator (I use Mac Terminal). I use Tauri simply to provide a channel between the backedn shell program and the frontend GUI. Tauri is nice here because I get to use frontend libraries and languages to make a GUI, so it's like developing in the browser except it's really a desktop app. Shell output is parsed in the frontend using a decoder (needed because everything outputted from the PTY to Tauri to frontend is just a bytestream), and the frontend manages its own shell state to route shell output either to xterm.js (a js terminal emulator) or to change the GUI (e.g. to create another textarea input). 
+# Rust Shell Interpreter
 
-TODO: 
-  - tilde expansion logic, system user display
-  - ||, &&, and & support
-  - autocomplete for shell commands
-  - fullscreen terminal app support (nvim, vim, etc.)
-  - terminal window resizing
+A bash-like shell and script interpreter written in Rust. It utilizes a stateful lexer, recursive descent parsing, and AST-based execution to handle shell grammar, piping, and IO redirection. This project was not vibe coded <small>(except for this .md file because screw markdown syntax lol)</small>.
 
-features so far:
-  - unix CLI tools supported via searching through $PATH variable. 
-  - piping (e.g. cat Cargo.toml | head -n 10 | grep "bin") via process spawning.
-  - redirection (<, >, >>)
-  - heredoc support (<< operator)
-  - editor history with [Rustyline](https://docs.rs/rustyline/18.0.0/rustyline/) DefaultEditor, arrow key support
-  - Fully custom, state-aware, error-aware shell Lexer using the [Logos](https://docs.rs/logos/latest/logos/) crate. "state" is managed through Logos as well. Different Logos enums = different shell lexer state, as how input is lexed into tokens changes depending on which enum the lexer is using to match into tokens. for example the normal lexer, which matches words and shell operators, will switch into a different lexer upon encountering a quote token like \` ' or " (for example a `>` is interpreted literally if within quotes, while it is the stdout redirect operator otherwise). If you were to try to execute a command that has a grammar/semantics error (e.g. unclosed quote, heredoc or redirect operator without a valid delimiter), the lexer will recognize this and will prompt the read loop for more input. TLDR; it behaves like a real Bash/zsh shell in your terminal. If you type `echo "hello` you're going to see a new prompt line asking you to close the double quote, and then it will execute
-  - Stateful parser in the frontend that watches for [OSC133](https://contour-terminal.org/vt-extensions/osc-133-shell-integration/#sequence-specification) sequences from the backend shell to track shell state. 
+## Usage
 
-**USE**  
-if have cargo/rust, do `cargo r` from terminal within project directory. if not, wait till i make this a desktop app lol.
-This shell has not been tested on Windows platforms; only on Mac. if you are a Windows user, probably going to need Git Bash so that the unix CLI tools can still be found in system $PATH. 
+* **`cargo r -- --debug`**: Starts the shell in debug mode, which shows the tokenized output of your input commands.
+* **`cargo r`** (or `cargo run`): Starts the regular CLI shell.
+* **`cargo t -- --nocapture --test-threads=1`**: Runs all tests sequentially. For each test, this prints out exactly what command is being run and outputs the tokenized input to the terminal.
+* **`cargo t`** (or `cargo test`): Runs all unit and integration tests in parallel.
 
-Cool commands to try  
+## Features
 
- ```
-cat << EOF | grep "bin" >> tmp.txt
- bingchilling
- binturong
- EOF
+### String Allocation Minimization
+* Minimizes heap allocations by heavily utilizing Rust lifetimes (`&'a str`).
+* The core pipeline (Shell <-> Lexer -> Parser -> Executor) relies almost entirely on string slices that reference the original user input command buffer.
+* Data is only converted to owned `String` types when crossing thread boundaries is required (specifically for heredoc contents and target filenames for redirection), and for interpreting quoted content.
+
+
+### Prompt Continuation
+* The grammar-aware lexer can prompt the shell REPL loop to continue input if it detects an incomplete statement.
+* This triggers if the input is missing a closing bracket, missing a closing quote, missing a closing delimiter for a heredoc, or ends with a pipe operator.
+* Example Process:
+    1. User inputs an unclosed heredoc: `$ cat << EOF`
+    2. The lexer yields a continuation state because `EOF` has not been found.
+    3. The shell prompts for more input:
+    `> line 1`
+    `> line 2`
+    `> EOF`
+    4. Once the delimiter is reached, parsing and execution proceed.
+
+
+### Supported Shell Operators
+* **Redirects (`<`, `>`, `>>`):** Route standard input and output to or from files.
+    * *Example:* `grep "error" < /var/log/syslog >> errors.txt > backup.txt` should grab the stdout of grep, append to errors.txt, and write it to a new backup.txt file
+
+
+* **Logical Operators (`&&`, `||`):** Chain commands conditionally based on the exit status of the previous command.
+    * *Example:* `cargo build && cargo test || echo "Build or tests failed!"`
+
+
+* **Subshells (`()`):** Execute a sequence of commands in an isolated child process by spawning a duplicate shell, leaving the parent's environment intact.
+    * *Example:* `(cd /tmp && wget http://example.com/file.zip && unzip file.zip) && ls`
+
+
+* **Pipes (`|`):** Pass the standard output of one command directly into the standard input of the next.
+    * *Example:* `cat README.md | grep "Rust" | wc -l`
+
+
+* **Heredocs (`<<`):** Stream inline, multi-line string payloads into a command's standard input.
+    *   *Sequential Example:*
+        ```bash
+        cat << ONE << TWO << THREE
+        First
+        ONE
+        Second
+        TWO
+        Third
+        THREE
+        # Output:
+        # First
+        # Second
+        # Third
+        ```
+    *   *Pipelined Example:*
+        ```bash
+        cat << A | cat << B | cat << C
+        Apples
+        A
+        Bananas
+        B
+        Cherries
+        C
+        # Output:
+        # Cherries
+        ```
+
+## Project Structure
+
+```text
+.
+├── Cargo.toml
+├── Cargo.lock
+├── package.json
+├── package-lock.json
+├── vite.config.ts
+├── index.html         # Tauri frontend
+├── css/               # Styling
+├── js/                # Typescript 
+├── node_modules/
+├── src/               # Core shell program, decoupled from tauri
+│   ├── lexer.rs       # Stateful lexer utilizing the logos crate
+│   ├── parser.rs      # Recursive descent parser that builds the AST
+│   ├── executor.rs    # Post-order DFS execution engine for process and I/O management
+│   └── shell.rs       # REPL loop and environment state management
+├── src-tauri/         # Tauri project (for a GUI; still work in progress)
+    ├── src/
+        ├── lib.rs
+        ├── main.rs
+    ├── Cargo.toml
+    ├── etc.
+├── target/            
+├── tests/
+│   └── integration_tests.rs  # test suite
+├── test_out.txt       # test suite output: 'cargo t -- --no-capture --test-threads=1'
+├── README.md
+
 ```
- should append
- ```
- bingchilling
- binturong
-```
- to tmp.txt
 
-```
-cat << one << two << three
-FIRST
-one
-SECOND
-two
-THIRD
-three
-```
-should print
-```
-FIRST
-SECOND
-THIRD
-```
+### Module Summaries
 
+* **`lexer.rs`**: A stateful lexer that uses the `logos` crate and regex to understand complex shell grammar (quoted/unquoted strings, shell operators, heredocs, look-ahead parsing). Identifies syntax errors early and converts the raw input string into a stream of tokens.
+* **`parser.rs`**: Takes the stream of tokens generated by the lexer and utilizes recursive descent parsing to construct an Abstract Syntax Tree (AST) representing the shell commands, pipelines, subshells, etc.
+* **`executor.rs`**:  Walks the generated AST using post-order DFS, spawning OS child processes, multiplexing background threads for I/O streaming, and connecting inter-process I/O pipes.
+* **`shell.rs`**: Entry point that wires the lexer, parser, and executor together, managing the Read-Eval-Print Loop (REPL), environment state, and terminal interactions.
+
+## Dependencies
+
+| Crate | Purpose |
+| --- | --- |
+| **`rustyline`** | Handles user input and command history. |
+| **`logos`** | Generates the stateful lexer via regex state machines for fast tokenization. |
+| **`serde`** | Handles serialization and deserialization of the AST, which is required for running subshells. |
+| **`whoami`** | Fetches OS details (user, device name). |
