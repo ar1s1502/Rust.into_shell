@@ -1,0 +1,1098 @@
+
+running 2 tests
+test unit_tests::test_lexer ... ok
+test unit_tests::test_lexer_fails ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+
+running 8 tests
+test test_basic ... [36mtesting[0m "echo 'hello world'"
+DEBUG_INFO:
+tkn: 'echo'; tkn: 'hello world'; 
+Word, 0..4
+Quote("hello world"), 5..18
+Newline, 18..19
+OUTPUT:
+hello world
+
+[32mPASS[0m
+
+[36mtesting[0m "cat Cargo.toml"
+DEBUG_INFO:
+tkn: 'cat'; tkn: 'Cargo.toml'; 
+Word, 0..3
+Word, 4..14
+Newline, 14..15
+OUTPUT:
+[package]
+name = "rust_shell"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = [
+  "src-tauri"
+]
+resolver = "3"
+
+[[bin]]
+name = "rust_shell"
+path = "src/shell.rs"
+
+[dependencies]
+anyhow = "1.0.102"
+logos = "0.16.1"
+rustyline = "18.0.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+whoami = "2.1.2"
+
+[32mPASS[0m
+
+[36mtesting[0m "ls .."
+DEBUG_INFO:
+tkn: 'ls'; tkn: '..'; 
+Word, 0..2
+Word, 3..5
+Newline, 5..6
+OUTPUT:
+gcd_server
+hello
+rust_shell
+vte_clone
+
+[32mPASS[0m
+
+ok
+test test_builtins ... [36mtesting[0m "pwd"
+DEBUG_INFO:
+tkn: 'pwd'; 
+Word, 0..3
+Newline, 3..4
+OUTPUT:
+/Users/aris/Projects/learnRust/rust_shell
+
+[32mPASS[0m
+
+[36mtesting[0m "cd ../ && pwd"
+DEBUG_INFO:
+tkn: 'cd'; tkn: '../'; tkn: '&&'; tkn: 'pwd'; 
+Word, 0..2
+Word, 3..6
+CmdAnd, 7..9
+Word, 10..13
+Newline, 13..14
+OUTPUT:
+
+/Users/aris/Projects/learnRust
+
+[32mPASS[0m
+
+[36mtesting[0m "cd ~/&&pwd"
+DEBUG_INFO:
+tkn: 'cd'; tkn: '~/'; tkn: '&&'; tkn: 'pwd'; 
+Word, 0..2
+Word, 3..5
+CmdAnd, 5..7
+Word, 7..10
+Newline, 10..11
+OUTPUT:
+
+/Users/aris
+
+[32mPASS[0m
+
+ok
+test test_combined_operators ... [36mtesting[0m "cat << EOF | grep 'match'
+ignore
+match this
+ignore again
+EOF"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: '|'; tkn: 'grep'; tkn: 'match'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: '|'; tkn: 'grep'; tkn: 'match'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: '|'; tkn: 'grep'; tkn: 'match'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: '|'; tkn: 'grep'; tkn: 'match'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: '|'; tkn: 'grep'; tkn: 'match'; 
+Word, 0..3
+Heredoc, 4..6
+Word, 7..10
+Pipe, 11..12
+Word, 13..17
+Quote("match"), 18..25
+Newline, 25..61
+heredocs: ["ignore\nmatch this\nignore again\n"]
+OUTPUT:
+match this
+
+[32mPASS[0m
+
+[36mtesting[0m "(cd ../ && pwd) && pwd"
+DEBUG_INFO:
+tkn: '('; tkn: 'cd'; tkn: '../'; tkn: '&&'; tkn: 'pwd'; tkn: ')'; tkn: '&&'; tkn: 'pwd'; 
+LParen, 0..1
+Word, 1..3
+Word, 4..7
+CmdAnd, 8..10
+Word, 11..14
+RParen, 14..15
+CmdAnd, 16..18
+Word, 19..22
+Newline, 22..23
+OUTPUT:
+
+/Users/aris/Projects/learnRust
+/Users/aris/Projects/learnRust/rust_shell
+
+[32mPASS[0m
+
+[36mtesting[0m "echo "test data" | grep "match" && echo "found" || echo "not found""
+DEBUG_INFO:
+tkn: 'echo'; tkn: 'test data'; tkn: '|'; tkn: 'grep'; tkn: 'match'; tkn: '&&'; tkn: 'echo'; tkn: 'found'; tkn: '||'; tkn: 'echo'; tkn: 'not found'; 
+Word, 0..4
+Quote("test data"), 5..16
+Pipe, 17..18
+Word, 19..23
+Quote("match"), 24..31
+CmdAnd, 32..34
+Word, 35..39
+Quote("found"), 40..47
+CmdOr, 48..50
+Word, 51..55
+Quote("not found"), 56..67
+Newline, 67..68
+OUTPUT:
+not found
+
+[32mPASS[0m
+
+[36mtesting[0m "(cat | grep "critical") <errors.log>result.txt || echo pipeline fail"
+DEBUG_INFO:
+tkn: '('; tkn: 'cat'; tkn: '|'; tkn: 'grep'; tkn: 'critical'; tkn: ')'; tkn: '<'; tkn: 'errors.log'; tkn: '>'; tkn: 'result.txt'; tkn: '||'; tkn: 'echo'; tkn: 'pipeline'; tkn: 'fail'; 
+LParen, 0..1
+Word, 1..4
+Pipe, 5..6
+Word, 7..11
+Quote("critical"), 12..22
+RParen, 22..23
+RedirectIn, 24..25
+Word, 25..35
+RedirectOut, 35..36
+Word, 36..46
+CmdOr, 47..49
+Word, 50..54
+Word, 55..63
+Word, 64..68
+Newline, 68..69
+OUTPUT:
+pipeline fail
+
+[32mPASS[0m
+
+[36mtesting[0m "cat result.txt"
+DEBUG_INFO:
+tkn: 'cat'; tkn: 'result.txt'; 
+Word, 0..3
+Word, 4..14
+Newline, 14..15
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m "cat << EOF1 << EOF2 | grep "target" && echo "triggered"
+alpha
+target
+EOF1
+beta
+EOF2"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<<'; tkn: 'EOF1'; tkn: '<<'; tkn: 'EOF2'; tkn: '|'; tkn: 'grep'; tkn: 'target'; tkn: '&&'; tkn: 'echo'; tkn: 'triggered'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF1'; tkn: '<<'; tkn: 'EOF2'; tkn: '|'; tkn: 'grep'; tkn: 'target'; tkn: '&&'; tkn: 'echo'; tkn: 'triggered'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF1'; tkn: '<<'; tkn: 'EOF2'; tkn: '|'; tkn: 'grep'; tkn: 'target'; tkn: '&&'; tkn: 'echo'; tkn: 'triggered'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF1'; tkn: '<<'; tkn: 'EOF2'; tkn: '|'; tkn: 'grep'; tkn: 'target'; tkn: '&&'; tkn: 'echo'; tkn: 'triggered'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF1'; tkn: '<<'; tkn: 'EOF2'; tkn: '|'; tkn: 'grep'; tkn: 'target'; tkn: '&&'; tkn: 'echo'; tkn: 'triggered'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF1'; tkn: '<<'; tkn: 'EOF2'; tkn: '|'; tkn: 'grep'; tkn: 'target'; tkn: '&&'; tkn: 'echo'; tkn: 'triggered'; 
+Word, 0..3
+Heredoc, 4..6
+Word, 7..11
+Heredoc, 12..14
+Word, 15..19
+Pipe, 20..21
+Word, 22..26
+Quote("target"), 27..35
+CmdAnd, 36..38
+Word, 39..43
+Quote("triggered"), 44..55
+Newline, 55..84
+heredocs: ["alpha\ntarget\n", "beta\n"]
+OUTPUT:
+target
+triggered
+
+[32mPASS[0m
+
+[36mtesting[0m "(false || echo "recovered output") > file1.txt > file2.txt || echo "failed completely""
+DEBUG_INFO:
+tkn: '('; tkn: 'false'; tkn: '||'; tkn: 'echo'; tkn: 'recovered output'; tkn: ')'; tkn: '>'; tkn: 'file1.txt'; tkn: '>'; tkn: 'file2.txt'; tkn: '||'; tkn: 'echo'; tkn: 'failed completely'; 
+LParen, 0..1
+Word, 1..6
+CmdOr, 7..9
+Word, 10..14
+Quote("recovered output"), 15..33
+RParen, 33..34
+RedirectOut, 35..36
+Word, 37..46
+RedirectOut, 47..48
+Word, 49..58
+CmdOr, 59..61
+Word, 62..66
+Quote("failed completely"), 67..86
+Newline, 86..87
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m "cat < file1.txt < file2.txt"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<'; tkn: 'file1.txt'; tkn: '<'; tkn: 'file2.txt'; 
+Word, 0..3
+RedirectIn, 4..5
+Word, 6..15
+RedirectIn, 16..17
+Word, 18..27
+Newline, 27..28
+OUTPUT:
+recovered output
+recovered output
+
+[32mPASS[0m
+
+[36mtesting[0m "(grep "ERROR" && echo "found errors"
+) < system.log >> audit.log || echo "audit failed""
+DEBUG_INFO:
+tkn: '('; tkn: 'grep'; tkn: 'ERROR'; tkn: '&&'; tkn: 'echo'; tkn: 'found errors'; 
+tkn: '('; tkn: 'grep'; tkn: 'ERROR'; tkn: '&&'; tkn: 'echo'; tkn: 'found errors'; 
+tkn: ')'; tkn: '<'; tkn: 'system.log'; tkn: '>>'; tkn: 'audit.log'; tkn: '||'; tkn: 'echo'; tkn: 'audit failed'; 
+LParen, 0..1
+Word, 1..5
+Quote("ERROR"), 6..13
+CmdAnd, 14..16
+Word, 17..21
+Quote("found errors"), 22..36
+Newline, 36..37
+RParen, 37..38
+RedirectIn, 39..40
+Word, 41..51
+RedirectAppend, 52..54
+Word, 55..64
+CmdOr, 65..67
+Word, 68..72
+Quote("audit failed"), 73..87
+Newline, 87..88
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m "cat audit.log"
+DEBUG_INFO:
+tkn: 'cat'; tkn: 'audit.log'; 
+Word, 0..3
+Word, 4..13
+Newline, 13..14
+OUTPUT:
+AUDIT
+2026-07-19 ERROR: Failed to bind to interface on port 8080.
+found errors
+
+[32mPASS[0m
+
+[36mtesting[0m "cat audit.log |
+ wc -c"
+DEBUG_INFO:
+tkn: 'cat'; tkn: 'audit.log'; tkn: '|'; 
+tkn: 'cat'; tkn: 'audit.log'; tkn: '|'; 
+tkn: 'wc'; tkn: '-c'; 
+Word, 0..3
+Word, 4..13
+Pipe, 14..15
+Newline, 15..16
+Word, 17..19
+Word, 20..22
+Newline, 22..23
+OUTPUT:
+      79
+
+[32mPASS[0m
+
+[36mtesting[0m "(true && (false || echo "nested fallback"))"
+DEBUG_INFO:
+tkn: '('; tkn: 'true'; tkn: '&&'; tkn: '('; tkn: 'false'; tkn: '||'; tkn: 'echo'; tkn: 'nested fallback'; tkn: ')'; tkn: ')'; 
+LParen, 0..1
+Word, 1..5
+CmdAnd, 6..8
+LParen, 9..10
+Word, 10..15
+CmdOr, 16..18
+Word, 19..23
+Quote("nested fallback"), 24..41
+RParen, 41..42
+RParen, 42..43
+Newline, 43..44
+OUTPUT:
+nested fallback
+
+[32mPASS[0m
+
+[36mtesting[0m "echo "data stream" | (cat | grep "data" && (echo "deep match"))"
+DEBUG_INFO:
+tkn: 'echo'; tkn: 'data stream'; tkn: '|'; tkn: '('; tkn: 'cat'; tkn: '|'; tkn: 'grep'; tkn: 'data'; tkn: '&&'; tkn: '('; tkn: 'echo'; tkn: 'deep match'; tkn: ')'; tkn: ')'; 
+Word, 0..4
+Quote("data stream"), 5..18
+Pipe, 19..20
+LParen, 21..22
+Word, 22..25
+Pipe, 26..27
+Word, 28..32
+Quote("data"), 33..39
+CmdAnd, 40..42
+LParen, 43..44
+Word, 44..48
+Quote("deep match"), 49..61
+RParen, 61..62
+RParen, 62..63
+Newline, 63..64
+OUTPUT:
+data stream
+deep match
+
+[32mPASS[0m
+
+ok
+test test_heredocs ... [36mtesting[0m "cat << EOF
+hello
+world
+EOF"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; 
+Word, 0..3
+Heredoc, 4..6
+Word, 7..10
+Newline, 10..27
+heredocs: ["hello\nworld\n"]
+OUTPUT:
+hello
+world
+
+[32mPASS[0m
+
+[36mtesting[0m "cat << EOF
+EOF"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; 
+Word, 0..3
+Heredoc, 4..6
+Word, 7..10
+Newline, 10..15
+heredocs: [""]
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m "cat << EOF
+  nested line
+    deeply nested line
+EOF"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; 
+Word, 0..3
+Heredoc, 4..6
+Word, 7..10
+Newline, 10..52
+heredocs: ["  nested line\n    deeply nested line\n"]
+OUTPUT:
+  nested line
+    deeply nested line
+
+[32mPASS[0m
+
+[36mtesting[0m "cat << EOF | grep target
+ignore this line
+this is the target
+skip this too
+EOF"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: '|'; tkn: 'grep'; tkn: 'target'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: '|'; tkn: 'grep'; tkn: 'target'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: '|'; tkn: 'grep'; tkn: 'target'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: '|'; tkn: 'grep'; tkn: 'target'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: '|'; tkn: 'grep'; tkn: 'target'; 
+Word, 0..3
+Heredoc, 4..6
+Word, 7..10
+Pipe, 11..12
+Word, 13..17
+Word, 18..24
+Newline, 24..79
+heredocs: ["ignore this line\nthis is the target\nskip this too\n"]
+OUTPUT:
+this is the target
+
+[32mPASS[0m
+
+[36mtesting[0m "cat << EOF | wc -w
+rust language shell execution
+EOF"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: '|'; tkn: 'wc'; tkn: '-w'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: '|'; tkn: 'wc'; tkn: '-w'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: '|'; tkn: 'wc'; tkn: '-w'; 
+Word, 0..3
+Heredoc, 4..6
+Word, 7..10
+Pipe, 11..12
+Word, 13..15
+Word, 16..18
+Newline, 18..53
+heredocs: ["rust language shell execution\n"]
+OUTPUT:
+       4
+
+[32mPASS[0m
+
+[36mtesting[0m "cat << EOF
+echo "hello"
+print('world')
+EOF"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; 
+Word, 0..3
+Heredoc, 4..6
+Word, 7..10
+Newline, 10..43
+heredocs: ["echo \"hello\"\nprint('world')\n"]
+OUTPUT:
+echo "hello"
+print('world')
+
+[32mPASS[0m
+
+[36mtesting[0m "cat << A << B << C
+First
+A
+Second
+B
+Third
+C"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<<'; tkn: 'A'; tkn: '<<'; tkn: 'B'; tkn: '<<'; tkn: 'C'; tkn: 'cat'; tkn: '<<'; tkn: 'A'; tkn: '<<'; tkn: 'B'; tkn: '<<'; tkn: 'C'; tkn: 'cat'; tkn: '<<'; tkn: 'A'; tkn: '<<'; tkn: 'B'; tkn: '<<'; tkn: 'C'; tkn: 'cat'; tkn: '<<'; tkn: 'A'; tkn: '<<'; tkn: 'B'; tkn: '<<'; tkn: 'C'; tkn: 'cat'; tkn: '<<'; tkn: 'A'; tkn: '<<'; tkn: 'B'; tkn: '<<'; tkn: 'C'; tkn: 'cat'; tkn: '<<'; tkn: 'A'; tkn: '<<'; tkn: 'B'; tkn: '<<'; tkn: 'C'; tkn: 'cat'; tkn: '<<'; tkn: 'A'; tkn: '<<'; tkn: 'B'; tkn: '<<'; tkn: 'C'; 
+Word, 0..3
+Heredoc, 4..6
+Word, 7..8
+Heredoc, 9..11
+Word, 12..13
+Heredoc, 14..16
+Word, 17..18
+Newline, 18..44
+heredocs: ["First\n", "Second\n", "Third\n"]
+OUTPUT:
+First
+Second
+Third
+
+[32mPASS[0m
+
+[36mtesting[0m "cat <<eof
+This should work!
+eof"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<<'; tkn: 'eof'; tkn: 'cat'; tkn: '<<'; tkn: 'eof'; tkn: 'cat'; tkn: '<<'; tkn: 'eof'; 
+Word, 0..3
+Heredoc, 4..6
+Word, 6..9
+Newline, 9..32
+heredocs: ["This should work!\n"]
+OUTPUT:
+This should work!
+
+[32mPASS[0m
+
+ok
+test test_logicals ... [36mtesting[0m "true && echo "second ran""
+DEBUG_INFO:
+tkn: 'true'; tkn: '&&'; tkn: 'echo'; tkn: 'second ran'; 
+Word, 0..4
+CmdAnd, 5..7
+Word, 8..12
+Quote("second ran"), 13..25
+Newline, 25..26
+OUTPUT:
+second ran
+
+[32mPASS[0m
+
+[36mtesting[0m "false && echo "should not run""
+DEBUG_INFO:
+tkn: 'false'; tkn: '&&'; tkn: 'echo'; tkn: 'should not run'; 
+Word, 0..5
+CmdAnd, 6..8
+Word, 9..13
+Quote("should not run"), 14..30
+Newline, 30..31
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m "true||echo "should not run""
+DEBUG_INFO:
+tkn: 'true'; tkn: '||'; tkn: 'echo'; tkn: 'should not run'; 
+Word, 0..4
+CmdOr, 4..6
+Word, 6..10
+Quote("should not run"), 11..27
+Newline, 27..28
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m "false||echo "fallback ran""
+DEBUG_INFO:
+tkn: 'false'; tkn: '||'; tkn: 'echo'; tkn: 'fallback ran'; 
+Word, 0..5
+CmdOr, 5..7
+Word, 7..11
+Quote("fallback ran"), 12..26
+Newline, 26..27
+OUTPUT:
+fallback ran
+
+[32mPASS[0m
+
+[36mtesting[0m "true && true && echo "chain complete" || echo "failed""
+DEBUG_INFO:
+tkn: 'true'; tkn: '&&'; tkn: 'true'; tkn: '&&'; tkn: 'echo'; tkn: 'chain complete'; tkn: '||'; tkn: 'echo'; tkn: 'failed'; 
+Word, 0..4
+CmdAnd, 5..7
+Word, 8..12
+CmdAnd, 13..15
+Word, 16..20
+Quote("chain complete"), 21..37
+CmdOr, 38..40
+Word, 41..45
+Quote("failed"), 46..54
+Newline, 54..55
+OUTPUT:
+chain complete
+
+[32mPASS[0m
+
+[36mtesting[0m "true && false && echo "skipped" ||echo "recovered""
+DEBUG_INFO:
+tkn: 'true'; tkn: '&&'; tkn: 'false'; tkn: '&&'; tkn: 'echo'; tkn: 'skipped'; tkn: '||'; tkn: 'echo'; tkn: 'recovered'; 
+Word, 0..4
+CmdAnd, 5..7
+Word, 8..13
+CmdAnd, 14..16
+Word, 17..21
+Quote("skipped"), 22..31
+CmdOr, 32..34
+Word, 34..38
+Quote("recovered"), 39..50
+Newline, 50..51
+OUTPUT:
+recovered
+
+[32mPASS[0m
+
+[36mtesting[0m "false ||true && echo "step 3"&& false || echo "final escape""
+DEBUG_INFO:
+tkn: 'false'; tkn: '||'; tkn: 'true'; tkn: '&&'; tkn: 'echo'; tkn: 'step 3'; tkn: '&&'; tkn: 'false'; tkn: '||'; tkn: 'echo'; tkn: 'final escape'; 
+Word, 0..5
+CmdOr, 6..8
+Word, 8..12
+CmdAnd, 13..15
+Word, 16..20
+Quote("step 3"), 21..29
+CmdAnd, 29..31
+Word, 32..37
+CmdOr, 38..40
+Word, 41..45
+Quote("final escape"), 46..60
+Newline, 60..61
+OUTPUT:
+step 3
+final escape
+
+[32mPASS[0m
+
+ok
+test test_pipeline ... [36mtesting[0m "cat Cargo.toml | grep dependencies"
+DEBUG_INFO:
+tkn: 'cat'; tkn: 'Cargo.toml'; tkn: '|'; tkn: 'grep'; tkn: 'dependencies'; 
+Word, 0..3
+Word, 4..14
+Pipe, 15..16
+Word, 17..21
+Word, 22..34
+Newline, 34..35
+OUTPUT:
+[dependencies]
+
+[32mPASS[0m
+
+[36mtesting[0m "echo 'apple banana cherry' | tr ' ' '\n' | grep a"
+DEBUG_INFO:
+tkn: 'echo'; tkn: 'apple banana cherry'; tkn: '|'; tkn: 'tr'; tkn: ' '; tkn: '\n'; tkn: '|'; tkn: 'grep'; tkn: 'a'; 
+Word, 0..4
+Quote("apple banana cherry"), 5..26
+Pipe, 27..28
+Word, 29..31
+Quote(" "), 32..35
+Quote("\\n"), 36..40
+Pipe, 41..42
+Word, 43..47
+Word, 48..49
+Newline, 49..50
+OUTPUT:
+apple
+banana
+
+[32mPASS[0m
+
+[36mtesting[0m "printf 'line1\nline2\nline3\n' | wc -l"
+DEBUG_INFO:
+tkn: 'printf'; tkn: 'line1\nline2\nline3\n'; tkn: '|'; tkn: 'wc'; tkn: '-l'; 
+Word, 0..6
+Quote("line1\\nline2\\nline3\\n"), 7..30
+Pipe, 31..32
+Word, 33..35
+Word, 36..38
+Newline, 38..39
+OUTPUT:
+       3
+
+[32mPASS[0m
+
+[36mtesting[0m "echo 'reverse me' | rev"
+DEBUG_INFO:
+tkn: 'echo'; tkn: 'reverse me'; tkn: '|'; tkn: 'rev'; 
+Word, 0..4
+Quote("reverse me"), 5..17
+Pipe, 18..19
+Word, 20..23
+Newline, 23..24
+OUTPUT:
+em esrever
+
+[32mPASS[0m
+
+[36mtesting[0m "false | echo 'survived'"
+DEBUG_INFO:
+tkn: 'false'; tkn: '|'; tkn: 'echo'; tkn: 'survived'; 
+Word, 0..5
+Pipe, 6..7
+Word, 8..12
+Quote("survived"), 13..23
+Newline, 23..24
+OUTPUT:
+survived
+
+[32mPASS[0m
+
+[36mtesting[0m "seq 1 1000 | head -n 3"
+DEBUG_INFO:
+tkn: 'seq'; tkn: '1'; tkn: '1000'; tkn: '|'; tkn: 'head'; tkn: '-n'; tkn: '3'; 
+Word, 0..3
+Word, 4..5
+Word, 6..10
+Pipe, 11..12
+Word, 13..17
+Word, 18..20
+Word, 21..22
+Newline, 22..23
+OUTPUT:
+1
+2
+3
+
+[32mPASS[0m
+
+ok
+test test_redirects ... [36mtesting[0m "echo "binturong bin
+binder
+bingchilling" > temp.txt"
+DEBUG_INFO:
+tkn: 'echo'; tkn: 'echo'; tkn: 'echo'; tkn: 'binturong bin
+binder
+bingchilling'; tkn: '>'; tkn: 'temp.txt'; 
+Word, 0..4
+Quote("binturong bin\nbinder\nbingchilling"), 5..40
+RedirectOut, 41..42
+Word, 43..51
+Newline, 51..52
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m "<temp.txt cat"
+DEBUG_INFO:
+tkn: '<'; tkn: 'temp.txt'; tkn: 'cat'; 
+RedirectIn, 0..1
+Word, 1..9
+Word, 10..13
+Newline, 13..14
+OUTPUT:
+binturong bin
+binder
+bingchilling
+
+[32mPASS[0m
+
+[36mtesting[0m "grep 'binturong' < temp.txt"
+DEBUG_INFO:
+tkn: 'grep'; tkn: 'binturong'; tkn: '<'; tkn: 'temp.txt'; 
+Word, 0..4
+Quote("binturong"), 5..16
+RedirectIn, 17..18
+Word, 19..27
+Newline, 27..28
+OUTPUT:
+binturong bin
+
+[32mPASS[0m
+
+[36mtesting[0m "wc -l < temp.txt"
+DEBUG_INFO:
+tkn: 'wc'; tkn: '-l'; tkn: '<'; tkn: 'temp.txt'; 
+Word, 0..2
+Word, 3..5
+RedirectIn, 6..7
+Word, 8..16
+Newline, 16..17
+OUTPUT:
+       3
+
+[32mPASS[0m
+
+[36mtesting[0m "cat   <     temp.txt"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<'; tkn: 'temp.txt'; 
+Word, 0..3
+RedirectIn, 6..7
+Word, 12..20
+Newline, 24..25
+OUTPUT:
+binturong bin
+binder
+bingchilling
+
+[32mPASS[0m
+
+[36mtesting[0m "pwd > temp.txt"
+DEBUG_INFO:
+tkn: 'pwd'; tkn: '>'; tkn: 'temp.txt'; 
+Word, 0..3
+RedirectOut, 4..5
+Word, 6..14
+Newline, 14..15
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m "history > temp.txt"
+DEBUG_INFO:
+tkn: 'history'; tkn: '>'; tkn: 'temp.txt'; 
+Word, 0..7
+RedirectOut, 8..9
+Word, 10..18
+Newline, 18..19
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m "history >>temp.txt >temp2.txt"
+DEBUG_INFO:
+tkn: 'history'; tkn: '>>'; tkn: 'temp.txt'; tkn: '>'; tkn: 'temp2.txt'; 
+Word, 0..7
+RedirectAppend, 8..10
+Word, 10..18
+RedirectOut, 19..20
+Word, 20..29
+Newline, 29..30
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m "rm temp.txt temp2.txt"
+DEBUG_INFO:
+tkn: 'rm'; tkn: 'temp.txt'; tkn: 'temp2.txt'; 
+Word, 0..2
+Word, 3..11
+Word, 12..21
+Newline, 21..22
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m ">> temp.txt echo 'appended content'"
+DEBUG_INFO:
+tkn: '>>'; tkn: 'temp.txt'; tkn: 'echo'; tkn: 'appended content'; 
+RedirectAppend, 0..2
+Word, 3..11
+Word, 12..16
+Quote("appended content"), 17..35
+Newline, 35..36
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m "<temp.txt cat"
+DEBUG_INFO:
+tkn: '<'; tkn: 'temp.txt'; tkn: 'cat'; 
+RedirectIn, 0..1
+Word, 1..9
+Word, 10..13
+Newline, 13..14
+OUTPUT:
+binturong bin
+binder
+bingchilling
+appended content
+
+[32mPASS[0m
+
+[36mtesting[0m "< temp.txt >> temp2.txt cat"
+DEBUG_INFO:
+tkn: '<'; tkn: 'temp.txt'; tkn: '>>'; tkn: 'temp2.txt'; tkn: 'cat'; 
+RedirectIn, 0..1
+Word, 2..10
+RedirectAppend, 11..13
+Word, 14..23
+Word, 24..27
+Newline, 28..29
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m "cat < temp2.txt"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<'; tkn: 'temp2.txt'; 
+Word, 0..3
+RedirectIn, 4..5
+Word, 6..15
+Newline, 15..16
+OUTPUT:
+binturong bin
+binder
+bingchilling
+appended content
+
+[32mPASS[0m
+
+[36mtesting[0m ">temp2.txt cat << EOF
+wowzers
+EOF"
+DEBUG_INFO:
+tkn: '>'; tkn: 'temp2.txt'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: '>'; tkn: 'temp2.txt'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; tkn: '>'; tkn: 'temp2.txt'; tkn: 'cat'; tkn: '<<'; tkn: 'EOF'; 
+RedirectOut, 0..1
+Word, 1..10
+Word, 11..14
+Heredoc, 15..17
+Word, 18..21
+Newline, 21..34
+heredocs: ["wowzers\n"]
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m "cat <temp2.txt"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<'; tkn: 'temp2.txt'; 
+Word, 0..3
+RedirectIn, 4..5
+Word, 5..14
+Newline, 14..15
+OUTPUT:
+wowzers
+
+[32mPASS[0m
+
+[36mtesting[0m "echo 'binturong' > temp.txt"
+DEBUG_INFO:
+tkn: 'echo'; tkn: 'binturong'; tkn: '>'; tkn: 'temp.txt'; 
+Word, 0..4
+Quote("binturong"), 5..16
+RedirectOut, 17..18
+Word, 19..27
+Newline, 27..28
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m "cat < temp.txt < temp.txt"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<'; tkn: 'temp.txt'; tkn: '<'; tkn: 'temp.txt'; 
+Word, 0..3
+RedirectIn, 4..5
+Word, 6..14
+RedirectIn, 15..16
+Word, 17..25
+Newline, 25..26
+OUTPUT:
+binturong
+binturong
+
+[32mPASS[0m
+
+[36mtesting[0m "cat <temp.txt <<EOF
+bingchilling
+EOF"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<'; tkn: 'temp.txt'; tkn: '<<'; tkn: 'EOF'; tkn: 'cat'; tkn: '<'; tkn: 'temp.txt'; tkn: '<<'; tkn: 'EOF'; tkn: 'cat'; tkn: '<'; tkn: 'temp.txt'; tkn: '<<'; tkn: 'EOF'; 
+Word, 0..3
+RedirectIn, 4..5
+Word, 5..13
+Heredoc, 14..16
+Word, 16..19
+Newline, 19..37
+heredocs: ["bingchilling\n"]
+OUTPUT:
+binturong
+bingchilling
+
+[32mPASS[0m
+
+[36mtesting[0m "echo 'duplicated' > temp.txt >temp2.txt"
+DEBUG_INFO:
+tkn: 'echo'; tkn: 'duplicated'; tkn: '>'; tkn: 'temp.txt'; tkn: '>'; tkn: 'temp2.txt'; 
+Word, 0..4
+Quote("duplicated"), 5..17
+RedirectOut, 18..19
+Word, 20..28
+RedirectOut, 29..30
+Word, 30..39
+Newline, 39..40
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m "cat <temp.txt < temp2.txt"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<'; tkn: 'temp.txt'; tkn: '<'; tkn: 'temp2.txt'; 
+Word, 0..3
+RedirectIn, 4..5
+Word, 5..13
+RedirectIn, 14..15
+Word, 16..25
+Newline, 25..26
+OUTPUT:
+duplicated
+duplicated
+
+[32mPASS[0m
+
+[36mtesting[0m "<<EOF < temp.txt cat >> temp2.txt > temp3.txt
+binturong
+EOF"
+DEBUG_INFO:
+tkn: '<<'; tkn: 'EOF'; tkn: '<'; tkn: 'temp.txt'; tkn: 'cat'; tkn: '>>'; tkn: 'temp2.txt'; tkn: '>'; tkn: 'temp3.txt'; tkn: '<<'; tkn: 'EOF'; tkn: '<'; tkn: 'temp.txt'; tkn: 'cat'; tkn: '>>'; tkn: 'temp2.txt'; tkn: '>'; tkn: 'temp3.txt'; tkn: '<<'; tkn: 'EOF'; tkn: '<'; tkn: 'temp.txt'; tkn: 'cat'; tkn: '>>'; tkn: 'temp2.txt'; tkn: '>'; tkn: 'temp3.txt'; 
+Heredoc, 0..2
+Word, 2..5
+RedirectIn, 6..7
+Word, 8..16
+Word, 17..20
+RedirectAppend, 21..23
+Word, 24..33
+RedirectOut, 34..35
+Word, 36..45
+Newline, 45..60
+heredocs: ["binturong\n"]
+OUTPUT:
+
+[32mPASS[0m
+
+[36mtesting[0m "cat < temp2.txt"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<'; tkn: 'temp2.txt'; 
+Word, 0..3
+RedirectIn, 4..5
+Word, 6..15
+Newline, 15..16
+OUTPUT:
+duplicated
+binturong
+duplicated
+
+[32mPASS[0m
+
+[36mtesting[0m "cat < temp3.txt"
+DEBUG_INFO:
+tkn: 'cat'; tkn: '<'; tkn: 'temp3.txt'; 
+Word, 0..3
+RedirectIn, 4..5
+Word, 6..15
+Newline, 15..16
+OUTPUT:
+binturong
+duplicated
+
+[32mPASS[0m
+
+ok
+test test_subshells ... [36mtesting[0m "(echo hello)"
+DEBUG_INFO:
+tkn: '('; tkn: 'echo'; tkn: 'hello'; tkn: ')'; 
+LParen, 0..1
+Word, 1..5
+Word, 6..11
+RParen, 11..12
+Newline, 12..13
+OUTPUT:
+hello
+
+[32mPASS[0m
+
+[36mtesting[0m "(echo alpha && echo beta)"
+DEBUG_INFO:
+tkn: '('; tkn: 'echo'; tkn: 'alpha'; tkn: '&&'; tkn: 'echo'; tkn: 'beta'; tkn: ')'; 
+LParen, 0..1
+Word, 1..5
+Word, 6..11
+CmdAnd, 12..14
+Word, 15..19
+Word, 20..24
+RParen, 24..25
+Newline, 25..26
+OUTPUT:
+alpha
+beta
+
+[32mPASS[0m
+
+[36mtesting[0m "(echo outer && (echo inner))"
+DEBUG_INFO:
+tkn: '('; tkn: 'echo'; tkn: 'outer'; tkn: '&&'; tkn: '('; tkn: 'echo'; tkn: 'inner'; tkn: ')'; tkn: ')'; 
+LParen, 0..1
+Word, 1..5
+Word, 6..11
+CmdAnd, 12..14
+LParen, 15..16
+Word, 16..20
+Word, 21..26
+RParen, 26..27
+RParen, 27..28
+Newline, 28..29
+OUTPUT:
+outer
+inner
+
+[32mPASS[0m
+
+[36mtesting[0m "((((echo deep))))"
+DEBUG_INFO:
+tkn: '('; tkn: '('; tkn: '('; tkn: '('; tkn: 'echo'; tkn: 'deep'; tkn: ')'; tkn: ')'; tkn: ')'; tkn: ')'; 
+LParen, 0..1
+LParen, 1..2
+LParen, 2..3
+LParen, 3..4
+Word, 4..8
+Word, 9..13
+RParen, 13..14
+RParen, 14..15
+RParen, 15..16
+RParen, 16..17
+Newline, 17..18
+OUTPUT:
+deep
+
+[32mPASS[0m
+
+ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.42s
+

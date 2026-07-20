@@ -1,5 +1,5 @@
 use crate::lexer::{TknSpan, Tkn, get_token_at};
-use crate::executor::{ChildPr, Builtin, Redirect, Redir, get_builtins};
+use crate::executor::{ChildPr, Builtin, Subsh, Redirect, Redir, get_builtins};
 use std::collections::VecDeque;
 use std::iter::{Peekable};
 use std::slice::Iter;
@@ -26,7 +26,7 @@ pub enum AstNode<'a> {
 
     Pipeline(Vec<Box<AstNode<'a>>>),
 
-    Subshell(Vec<Box<AstNode<'a>>>),
+    Subshell(Subsh<'a>),
 
     Builtin(Builtin<'a>),
 }
@@ -68,8 +68,8 @@ impl<'a> Parser<'a> {
     fn expr(&mut self) -> anyhow::Result<Box<AstNode<'a>>> {
         let mut redirect_ins = Vec::new();
         let mut redirect_outs = Vec::new();
-        let mut heredoc_contents = VecDeque::new();
         let mut args = Vec::new();
+        let mut inner_ast_ = None;
         while let Some(cur_tkn) = self.advance() {
             match cur_tkn.kind {
                 /* args */
@@ -89,13 +89,13 @@ impl<'a> Parser<'a> {
                     redirect_outs.push(Redirect { dir: Redir::Out, file: outfile });
                 },
                 Tkn::RedirectAppend => {
-                    //must create owned copy of heredoc, because it later must cross thread boundary
                     let outfile = get_token_at(self.advance().unwrap(), self.cmd_buf).to_string();
                     redirect_outs.push(Redirect { dir: Redir::Append, file: outfile });
                 },
                 Tkn::Heredoc => {
-                    heredoc_contents.push_back(self.heredocs.pop_front().unwrap_or("").to_string());
-                    redirect_ins.push(Redirect { dir: Redir::Heredoc, file: "".to_string() });
+                    //must create owned copy of heredoc, because it later must cross thread boundary
+                    let heredoc_content = self.heredocs.pop_front().unwrap_or("").to_string();
+                    redirect_ins.push(Redirect { dir: Redir::Heredoc, file: heredoc_content });
                     //eat the heredoc delimiter
                     match self.tkns.peek().map(|t| &t.kind) {
                         Some(Tkn::Word) => { 
@@ -112,14 +112,23 @@ impl<'a> Parser<'a> {
                         }
                     };
                 },
-                /* Grouped commands in parentheses */ 
+                /* Grouped commands in parentheses => spawn a subshell */ 
                 Tkn::LParen => {
-                    return self.subshell();
+                    if !args.is_empty() { anyhow::bail!("Syntax Err: found '{}...' before subshell start", args[0]); }
+                    inner_ast_ = Some(self.build_subshell()?);
                 }
                 /* program delimiters */
                 Tkn::Newline | Tkn::Semicolon | Tkn::CmdOr | Tkn::CmdAnd | Tkn::RParen | Tkn::Pipe => {
-                    if args.is_empty() { 
+                    if args.is_empty() && inner_ast_.is_none() { 
                         return Err(anyhow!("Syntax Err: empty args"));
+                    }
+                    //if inner_ast is some, then we built a subshell program
+                    if let Some(inner_ast) = inner_ast_ {
+                        return Ok(Box::new(AstNode::Subshell(Subsh {
+                            inner_ast,
+                            redirect_ins,
+                            redirect_outs,
+                        })));
                     }
                     //if args[0] is a builtin command, then return astnode::builtin
                     if get_builtins().get(args[0]).is_some() {
@@ -134,7 +143,6 @@ impl<'a> Parser<'a> {
                         args: args,
                         redirect_ins,
                         redirect_outs,
-                        heredoc_contents,
                     })));
                 },
                 _ => return Err(anyhow!("Syntax Err: unexpected tkn in expression")),
@@ -143,7 +151,7 @@ impl<'a> Parser<'a> {
         Err(anyhow!("Parse error: no tkns"))
     }
 
-    fn subshell(&mut self) -> anyhow::Result<Box<AstNode<'a>>> {
+    fn build_subshell(&mut self) -> anyhow::Result<Vec<Box<AstNode<'a>>>> {
         let mut subsh = Vec::new();
         while self.cur_tkn.map_or(false, |t| t.kind != Tkn::RParen) {
             subsh.push(self.build_ast()?);
@@ -155,7 +163,7 @@ impl<'a> Parser<'a> {
                 self.eat(Tkn::RParen)?;
             }
         }
-        Ok(Box::new(AstNode::Subshell(subsh)))
+        Ok(subsh)
     }
 
     fn build_pipeline(&mut self) -> anyhow::Result<Box<AstNode<'a>>> {

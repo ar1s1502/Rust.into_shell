@@ -2,11 +2,12 @@
 
 use std::process::{Command, Stdio};
 use std::io::Write;
+use std::fs::{self, remove_file, File};
 use std::str;
 
 const SHELL_EXE: &'static str = env!("CARGO_BIN_EXE_rust_shell");
 const GREEN: &'static str = "\x1b[32m";
-const BLUE: &'static str = "\x1b[34m";
+const CYAN: &'static str = "\x1b[36m";
 const NC: &'static str = "\x1b[0m";
 
 fn trim_debug_output(output: &str) -> (&str, &str) {
@@ -14,6 +15,10 @@ fn trim_debug_output(output: &str) -> (&str, &str) {
         return (&output[..pos-2], &output[pos+9..]);
     }
     (output, output)
+}
+
+fn no_output() -> String {
+    "".to_string()
 }
 
 fn get_output(cmd: &str) -> String {
@@ -26,7 +31,7 @@ fn get_output(cmd: &str) -> String {
 
 fn run_test(cmd: &str, expected: String) -> anyhow::Result<()> {
     //spawn the rust shell as a child process
-    println!("{}testing{} \"{}\"", BLUE, NC, cmd.trim_end());
+    println!("{}testing{} \"{}\"", CYAN, NC, cmd.trim());
     let mut shell = Command::new(SHELL_EXE)
         .arg("--debug")
         .stdin(Stdio::piped())
@@ -40,7 +45,8 @@ fn run_test(cmd: &str, expected: String) -> anyhow::Result<()> {
     let res = shell.wait_with_output()?;
     assert!(res.status.success());
     let (debug_info, output) = trim_debug_output(str::from_utf8(&res.stdout).unwrap_or(""));
-    println!("{}", debug_info);
+    println!("DEBUG_INFO:\n{}", debug_info);
+    println!("OUTPUT:\n{}", output);
     assert_eq!(output.trim(), expected.trim());
     println!("{}PASS{}\n", GREEN, NC);
     Ok(())
@@ -94,6 +100,7 @@ fn test_pipeline() -> anyhow::Result<()> {
         ("false | echo 'survived'\n", "survived".to_string()),
         //  Large output buffering (prevents OS pipe buffer deadlocks)
         ("seq 1 1000 | head -n 3\n", "1\n2\n3".to_string()),
+        // test builtins
     ];
     for test in tests.into_iter() {
         run_test(test.0, test.1)?;
@@ -112,7 +119,7 @@ fn test_heredocs() -> anyhow::Result<()> {
         // Empty Heredoc: Verifies the shell handles an immediate delimiter cleanly without crashing.
         (
             "cat << EOF\nEOF\n", 
-            "".to_string()
+            no_output()
         ),
         // Preservation of Whitespace/Indentation: Heredocs must preserve leading spaces inside the body.
         (
@@ -155,46 +162,236 @@ fn test_heredocs() -> anyhow::Result<()> {
 fn test_redirects() -> anyhow::Result<()> {
     let mut filecontent = "binturong bin\nbinder\nbingchilling";
     let mut tests: Vec<(&str, String)> = vec![
-        ("echo \"binturong bin\nbinder\nbingchilling\" > temp.txt", "".to_string()),
+        ("echo \"binturong bin\nbinder\nbingchilling\" > temp.txt", no_output()),
         ("<temp.txt cat\n", filecontent.to_string()),
         ("grep 'binturong' < temp.txt\n", "binturong bin".to_string()),
         ("wc -l < temp.txt\n", "3".to_string()),
         ("cat   <     temp.txt    \n", filecontent.to_string()),
+        //make sure builtins work with redirection as well 
+        ("pwd > temp.txt\n", no_output()),
+        ("history > temp.txt\n", no_output()),
+        ("history >>temp.txt >temp2.txt\n", no_output()),
+        ("rm temp.txt temp2.txt\n", no_output()),
     ];
     for test in tests.into_iter() {
-        run_test(test.0, test.1)?;
+        if let Err(e) = run_test(test.0, test.1) {
+            // cleanup
+            remove_file("temp.txt")?;
+            remove_file("temp2.txt")?;
+            anyhow::bail!(e);
+        }
     }
-    filecontent = "binturong bin\nbinder\nbingchilling\nappended content";
+    filecontent = "binturong bin\nbinder\nbingchilling\n";
+    fs::write("temp.txt", filecontent)?;
+    filecontent = "binturong bin\nbinder\nbingchilling\nappended content"; 
     tests = vec![
         //redirect operator can be anywhere in command
-        (">> temp.txt echo 'appended content'\n", "".to_string()),
+        (">> temp.txt echo 'appended content'\n", no_output()),
         ("<temp.txt cat\n", filecontent.to_string()),
         //multidirection redirect
-        ("< temp.txt >> temp2.txt cat \n", "".to_string()),
+        ("< temp.txt >> temp2.txt cat \n", no_output()),
         ("cat < temp2.txt\n", filecontent.to_string()),
-        (">temp2.txt cat << EOF\nwowzers\nEOF\n", "".to_string()),
+        (">temp2.txt cat << EOF\nwowzers\nEOF\n", no_output()),
         ("cat <temp2.txt\n", "wowzers".to_string()),
         //multiple redirect in
-        ("echo 'binturong' > temp.txt\n", "".to_string()),
+        ("echo 'binturong' > temp.txt\n", no_output()),
         ("cat < temp.txt < temp.txt\n", "binturong\nbinturong".to_string()),
         ("cat <temp.txt <<EOF\nbingchilling\nEOF\n", "binturong\nbingchilling".to_string()),
         //multiple redirect out
-        ("echo 'duplicated' > temp.txt >temp2.txt\n", "".to_string()),
+        ("echo 'duplicated' > temp.txt >temp2.txt\n", no_output()),
         ("cat <temp.txt < temp2.txt\n", "duplicated\nduplicated".to_string()),
         // all 4
-        ("<<EOF < temp.txt cat >> temp2.txt > temp3.txt\nbinturong\nEOF\n", "".to_string()),
+        ("<<EOF < temp.txt cat >> temp2.txt > temp3.txt\nbinturong\nEOF\n", no_output()),
         ("cat < temp2.txt\n", "duplicated\nbinturong\nduplicated".to_string()),
         ("cat < temp3.txt\n", "binturong\nduplicated".to_string()),
     ];
     for test in tests.into_iter() {
-        run_test(test.0, test.1)?;
+        if let Err(e) = run_test(test.0, test.1) {
+            // cleanup
+            remove_file("temp.txt")?;
+            remove_file("temp2.txt")?;
+            remove_file("temp3.txt")?;
+            anyhow::bail!(e);
+        }
     }
     // cleanup
-    Command::new("rm").arg("temp.txt").status()?;
-    Command::new("rm").arg("temp2.txt").status()?;
-    Command::new("rm").arg("temp3.txt").status()?;
+    remove_file("temp.txt")?;
+    remove_file("temp2.txt")?;
+    remove_file("temp3.txt")?;
     Ok(())
 }
 
-        // // Combining Heredocs and Pipelines
-        // ("cat << EOF | grep 'match'\nignore\nmatch this\nignore again\nEOF\n", "match this".to_string()),
+#[test]
+fn test_logicals() -> anyhow::Result<()> {
+    let tests = vec![
+        // Short-Circuit Success: Confirms && continues executing when the first command succeeds.
+        (
+            "true && echo \"second ran\"\n",
+            "second ran\n".to_string()
+        ),
+        // Short-Circuit Failure: Confirms && immediately stops and skips the next command if the first fails.
+        (
+            "false && echo \"should not run\"\n",
+            no_output()
+        ),
+        // Fallback Success: Confirms || stops executing if the first command succeeds (no fallback needed).
+        (
+            "true||echo \"should not run\"\n",
+            no_output()
+        ),
+        // Fallback Execution: Confirms || executes the alternative command when the first fails.
+        (
+            "false||echo \"fallback ran\"\n",
+            "fallback ran\n".to_string()
+        ),
+        // Left-Associative Chaining (Success Chain): Verifies complex chaining where true && true bubbles up to trigger the fallback statement only if the chain breaks.
+        (
+            "true && true && echo \"chain complete\" || echo \"failed\"\n",
+            "chain complete\n".to_string()
+        ),
+        // Left-Associative Chaining (Interrupted Chain): Verifies that when a command in an && chain fails, execution breaks and cascades down to the next || block.
+        (
+            "true && false && echo \"skipped\" ||echo \"recovered\"\n",
+            "recovered\n".to_string()
+        ),
+        // Deep Nesting with Output Capture: Verifies that status codes bubble up perfectly through logical junctions to allow subsequent commands to execute cleanly.
+        (
+            "false ||true && echo \"step 3\"&& false || echo \"final escape\"\n",
+            "step 3\nfinal escape\n".to_string()
+        )
+    ];
+    for test in tests.into_iter() {
+        run_test(test.0, test.1)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn test_subshells() -> anyhow::Result<()> {
+    let tests = vec![
+        // Basic Subshell Isolation: Verifies a single subshell isolates commands and bubbles stdout up to the parent.
+        (
+            "(echo hello)\n",
+            "hello\n".to_string()
+        ),
+
+        // Sequential Commands Inside Subshell: Confirms that chained operations inside the parenthesis execute sequentially.
+        (
+            "(echo alpha && echo beta)\n",
+            "alpha\nbeta\n".to_string()
+        ),
+
+        // Basic Nesting: Verifies that a subshell can cleanly spawn and evaluate a child subshell.
+        (
+            "(echo outer && (echo inner))\n",
+            "outer\ninner\n".to_string()
+        ),
+
+        // Deeply Nested Layers: Stress-tests the recursive post-order DFS traversal by packing multiple layers of subshell execution.
+        (
+            "((((echo deep))))\n",
+            "deep\n".to_string()
+        ),
+    ];
+    for test in tests.into_iter() {
+        run_test(test.0, test.1)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn test_combined_operators() -> anyhow::Result<()> {
+    // SETUP
+    let mut error_log = File::create("errors.log")?;
+    error_log.write_all(b"2026-07-19 SUCCESS: Database connected successfully.\n\
+         2026-07-19 ERROR: Failed to bind to interface on port 8080.\n\
+         2026-07-19 WARN: High disk latency detected.\n"
+    )?;
+    let mut system_log = File::create("system.log")?;
+    system_log.write_all(b"2026-07-19 SUCCESS: Database connected successfully.\n\
+         2026-07-19 ERROR: Failed to bind to interface on port 8080.\n\
+         2026-07-19 WARN: High disk latency detected.\n\
+    ")?;
+    let mut audit_log = File::create("audit.log")?;
+    audit_log.write_all(b"AUDIT\n")?;
+    let cwd = std::env::current_dir().unwrap();
+    let parent_dir = cwd.parent().unwrap();
+
+    let tests = vec![
+        // Combining Heredocs and Pipelines
+        ("cat << EOF | grep 'match'\nignore\nmatch this\nignore again\nEOF\n", "match this".to_string()),
+
+        // Subshell Isolation and Logical Chaining
+        (
+            "(cd ../ && pwd) && pwd\n",
+            format!("{}\n{}", parent_dir.display(), cwd.display())
+        ),
+
+        // Pipeline Failure Short-Circuiting
+        (
+            "echo \"test data\" | grep \"match\" && echo \"found\" || echo \"not found\"\n",
+            "not found".to_string()
+        ),
+
+        // Pipelined Subshells with Redirection
+        (
+            "(cat | grep \"critical\") <errors.log>result.txt || echo pipeline fail\n",
+            "pipeline fail".to_string()
+        ),
+        // VERIFICATION: Because "critical" didn't match anything in error.log, 
+        // grep exits with 1, leaving result.txt created but completely empty (0 bytes).
+        (
+            "cat result.txt\n", 
+            no_output()
+        ),
+
+        // Heredoc Sequential Injection through a Pipeline into a Logical Branch
+        (
+            "cat << EOF1 << EOF2 | grep \"target\" && echo \"triggered\"\nalpha\ntarget\nEOF1\nbeta\nEOF2\n",
+            "target\ntriggered".to_string()
+        ),
+
+        // Multi-Output Broadcast from a Complex Subshell Cascade
+        (
+            "(false || echo \"recovered output\") > file1.txt > file2.txt || echo \"failed completely\"\n",
+            no_output() 
+        ), 
+        ("cat < file1.txt < file2.txt\n", "recovered output\nrecovered output".to_string()),
+
+        // Deep Stress Test: The Kitchen Sink
+        (
+            "(grep \"ERROR\" && echo \"found errors\"\n) < system.log >> audit.log || echo \"audit failed\"\n",
+            no_output()
+        ),
+        // VERIFICATION: audit.log originally held "AUDIT\n". The kitchen sink test 
+        // matches the ERROR line via grep, then appends the byte count of "found errors\n" (13).
+        (
+            "cat audit.log\n",
+            "AUDIT\n2026-07-19 ERROR: Failed to bind to interface on port 8080.\nfound errors".to_string()
+        ),
+        ("cat audit.log |\n wc -c\n", "79".to_string()),
+
+        // Nested Subshells with Logical Short-Circuiting
+        (
+            "(true && (false || echo \"nested fallback\"))\n",
+            "nested fallback".to_string()
+        ),
+
+        // Pipeline Interacting with Nested Subshell
+        (
+            "echo \"data stream\" | (cat | grep \"data\" && (echo \"deep match\"))\n",
+            "data stream\ndeep match".to_string()
+        ),
+    ];
+
+    for test in tests.into_iter() {
+        if let Err(e) = run_test(test.0, test.1) {
+            // cleanup
+            let _ = Command::new("sh").arg("-c").arg("rm *.log file*.txt result.txt").status();
+            anyhow::bail!(e);
+        }
+    }
+    // cleanup
+    let _ = Command::new("sh").arg("-c").arg("rm *.log file*.txt result.txt").status();
+    Ok(())
+}

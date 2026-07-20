@@ -3,14 +3,15 @@ use crate::lexer::{TknSpan, Tkn};
 use crate::{AS_SUBSHELL, RL_EDITOR, is_debug, exit_shell};
 use serde::{Deserialize, Serialize};
 use std::collections::{VecDeque, HashMap};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus, Stdio, };
 use std::process;
 use std::fs::{File, OpenOptions, };
 use std::io::{Write, self, PipeReader, PipeWriter, Read};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use anyhow::anyhow;
+use std::thread;
+use std::mem;
 use rustyline::history::{History, SearchDirection};
 
 type BuiltinFn = fn(&[&str], Option<PipeReader>) -> anyhow::Result<String>;
@@ -49,25 +50,29 @@ pub struct Builtin<'a> { //built in command
     //I/O streams for redirection
     pub redirect_ins: Vec<Redirect>,
     pub redirect_outs: Vec<Redirect>,
-                                            
-    //pub heredoc_content: Vec<'a str>, 
 }
 
 impl<'a> Builtin<'a> {
-    pub fn exec_builtin(&self, pipe_write: Option<PipeWriter>, pipe_read: Option<PipeReader>) {
+    pub fn exec_builtin(&mut self, pipe_write: Option<PipeWriter>, pipe_read: Option<PipeReader>)
+    -> anyhow::Result<()> {
         let builtin_fn = get_builtins().get(self.args[0]).unwrap(); //unwrap safe because parser checks if in builtins
         match builtin_fn(&self.args, pipe_read) {
             Ok(output_str) => {
-                if let Some(mut pipe_writer) = pipe_write {
-                    std::thread::spawn(move || {
+                if !self.redirect_outs.is_empty() {
+                    let redirects = mem::take(&mut self.redirect_outs);
+                    use std::io::Cursor;
+                    write_to_redirect_outs(redirects, Cursor::new(output_str))?;
+                } else if let Some(mut pipe_writer) = pipe_write {
+                    thread::spawn(move || {
                         let _ = pipe_writer.write_all(output_str.as_bytes());
                     });
                 } else {
                     println!("{}", output_str);
                 }
             },
-            Err(e) => println!("{}", e),
+            Err(e) => eprintln!("{}", e),
         }
+        Ok(())
     }
 }
 
@@ -80,17 +85,23 @@ pub struct ChildPr<'a> { //a child process spawned by shell
     pub redirect_outs: Vec<Redirect>,
 
     pub prog_name: &'a str,
-    pub heredoc_contents: VecDeque<String>,
 }
 
 impl<'a> ChildPr<'a> {
-    pub fn spawn(&mut self, stdin: Stdio, stdout: Stdio) 
+    pub fn spawn(&mut self, mut stdin: Stdio, mut stdout: Stdio) 
     -> anyhow::Result<process::Child> {
+        if !self.redirect_ins.is_empty() { stdin = Stdio::piped(); }
+        if !self.redirect_outs.is_empty() { stdout = Stdio::piped(); }
+        
         let mut handle = Command::new(self.args[0]);
-        handle.args(&self.args[1..]); 
+        if self.args.len() > 1 {
+            handle.args(&self.args[1..]); 
+        }
         handle.stdin(stdin);
         handle.stdout(stdout);
-        self.apply_redirect(&mut handle)
+        let mut c = handle.spawn()?;
+        self.apply_redirect(&mut c)?;
+        Ok(c)
     }
 
     //same as spawn, but will wait for process to finish and collect status
@@ -99,23 +110,17 @@ impl<'a> ChildPr<'a> {
         Ok(c.wait()?)
     }
 
-    //spawn the child process, apply any redirect operators (<, <<, >, >>)
-    fn apply_redirect(&mut self, handle: &mut process::Command) -> anyhow::Result<process::Child> {
-        if !self.redirect_ins.is_empty() { handle.stdin(Stdio::piped()); };
-        if !self.redirect_outs.is_empty() { handle.stdout(Stdio::piped()); };
-        let mut c = handle.spawn()?;
+    //apply any redirect operators (<, <<, >, >>)
+    fn apply_redirect(&mut self, c: &mut process::Child) -> anyhow::Result<()> {
         if !self.redirect_ins.is_empty() {
             let mut stdin_handle = c.stdin.take().expect("Failed to take child stdin handle");
-            let redirects = std::mem::take(&mut self.redirect_ins);
-            let mut heredocs = std::mem::take(&mut self.heredoc_contents);
-            std::thread::spawn(move || {
+            let redirects = mem::take(&mut self.redirect_ins);
+            thread::spawn(move || {
                 for r in redirects.into_iter() {
                     match r.dir {
                         Redir::Heredoc => { 
-                            if let Some(ref content) = heredocs.pop_front() { 
-                                //write_all is fine because different thread 
-                                let _ = stdin_handle.write_all(content.as_bytes());
-                            }
+                            //Redirect.file is heredoc content in this case, not file path
+                            let _ = stdin_handle.write_all((&r.file).as_bytes());
                         },
                         Redir::In => {
                             if let Ok(mut f) = File::open(&r.file) {
@@ -129,43 +134,105 @@ impl<'a> ChildPr<'a> {
             });
         }
         if !self.redirect_outs.is_empty() {
-            let mut stdout_handle = c.stdout.take().expect("Failed to take child stdout handle");
-            let redirects = std::mem::take(&mut self.redirect_outs);
-            let mut outfiles = Vec::new();
-            //create/open all outfiles. (this happens even if command stdout is never written to)
-            for r in redirects.iter() {
-                match r.dir {
-                    Redir::Out => outfiles.push(OpenOptions::new()
-                        .create(true)
-                        .write(true)
-                        .truncate(true)
-                        .open(&r.file)?), //This should be equivalent to File::create
-                    Redir::Append => outfiles.push(OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&r.file)?),
-                    _ => anyhow::bail!("unreachable: got redirect in while executing redirect out"),
-                }
-            }
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 5*(1<<10)];
-                loop {
-                    match stdout_handle.read(&mut buf) {
-                        Ok(0) => break, //EOF
-                        Ok(n) => {
-                            for f in outfiles.iter_mut() {
-                                let _ = f.write_all(&buf[..n]);
-                            }
-                        },
-                        Err(_) => break, 
-                    }
-                }
-            });            
+            let stdout_handle = c.stdout.take().expect("Failed to take child stdout handle");
+            let redirects = mem::take(&mut self.redirect_outs);
+            write_to_redirect_outs(redirects, stdout_handle)?;
         }
 
-        Ok(c) 
+        Ok(()) 
     }
 
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Subsh<'a> {
+    #[serde(borrow)]
+    pub inner_ast: Vec<Box<AstNode<'a>>>,
+
+    pub redirect_ins: Vec<Redirect>,
+    pub redirect_outs: Vec<Redirect>,
+}
+
+impl<'a> Subsh<'a> {
+    pub fn spawn(&mut self, mut stdin: Stdio, mut stdout: Stdio) -> anyhow::Result<process::Child> {
+        let mut inner_ast = mem::take(&mut self.inner_ast);
+        //File I/O redirects override inherited or pipe I/O handles
+        if !self.redirect_ins.is_empty() { 
+            stdin = Stdio::piped();  //override
+            let redirects = mem::take(&mut self.redirect_ins);
+            let first_node = &mut inner_ast[0];
+            self.apply_redirect_in(redirects, first_node)?;
+        }
+        if !self.redirect_outs.is_empty() { stdout = Stdio::piped(); }
+
+        let shell_exe = std::env::current_exe()?;
+        let serialized_ast = serde_json::to_string(&inner_ast)?;
+        let mut subsh = Command::new(shell_exe)
+            .env(AS_SUBSHELL, &serialized_ast)
+            .stdin(stdin)
+            .stdout(stdout)
+            .spawn()?;
+        if !self.redirect_outs.is_empty() {
+            let stdout_handle = subsh.stdout.take().expect("failed to take child process stdout");
+            let redirects = mem::take(&mut self.redirect_outs);
+            write_to_redirect_outs(redirects, stdout_handle)?;
+        }
+        Ok(subsh)
+    }
+
+    pub fn status(&mut self) -> anyhow::Result<ExitStatus> {
+        let mut c = self.spawn(Stdio::inherit(), Stdio::inherit())?;
+        Ok(c.wait()?)
+    }
+
+    fn apply_redirect_in (&self, redirects: Vec<Redirect>, first_node: &mut Box<AstNode<'a>>) -> anyhow::Result<()> {
+        match &mut **first_node {
+            AstNode::Subshell(subsh) => subsh.redirect_ins.extend(redirects),
+            AstNode::Prog(child_pr) => child_pr.redirect_ins.extend(redirects),
+            AstNode::Builtin(builtin) => builtin.redirect_ins.extend(redirects),
+            AstNode::Logical{ lhs,..} => self.apply_redirect_in(redirects, lhs)?,
+            AstNode::Pipeline(pipeline) => self.apply_redirect_in(redirects, &mut pipeline[0])?,
+        }
+        Ok(())
+    }
+
+}
+
+fn write_to_redirect_outs<T>(redirects: Vec<Redirect>, mut stdout_handle: T) -> anyhow::Result<()> 
+where 
+    T: Read + std::marker::Send + 'static, //Send and static required because moving across thread bound
+{
+    let mut outfiles = Vec::new();
+    //create/open all outfiles. (per Bourne shell, this happens even if command stdout is never written to)
+    for r in redirects.iter() {
+        match r.dir {
+            Redir::Out => outfiles.push(OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&r.file)?), //This should be equivalent to File::create
+            Redir::Append => outfiles.push(OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&r.file)?),
+            _ => anyhow::bail!("unreachable: got redirect in while executing redirect out"),
+        }
+    }
+    thread::spawn(move || {
+        let mut buf = [0u8; 5*(1<<10)];
+        loop {
+            match stdout_handle.read(&mut buf) {
+                Ok(0) => break, //EOF
+                Ok(n) => {
+                    for f in outfiles.iter_mut() {
+                        let _ = f.write_all(&buf[..n]);
+                    }
+                },
+                Err(_) => break, 
+            }
+        }
+    });            
+    Ok(())
 }
 
 //convert std::io::PipeWriter/Reader to std::process::Stdio
@@ -198,27 +265,19 @@ fn spawn_pipeline(progs: &mut Vec<Box<AstNode>>) -> anyhow::Result<Vec<process::
         //prog is either a Prog(child_pr) or a Subshell(subsh)
         match &mut **prog {
             AstNode::Builtin(builtin) => {
-                builtin.exec_builtin(cur_pipe_write, cur_pipe_read);
+                builtin.exec_builtin(cur_pipe_write, cur_pipe_read)?;
             },
             AstNode::Prog(child_pr) => {
                 let (c_stdout, c_stdin) = convert_pipe_fds(cur_pipe_write, cur_pipe_read);
 
-                let child = child_pr.spawn(c_stdin, c_stdout)?;
-                children.push(child);
+                children.push(child_pr.spawn(c_stdin, c_stdout)?);
             },
-            AstNode::Subshell(inner_ast) => {
+            AstNode::Subshell(subsh) => {
                 let (c_stdout, c_stdin) = convert_pipe_fds(cur_pipe_write, cur_pipe_read);
 
-                let shell_exe = std::env::current_exe()?;
-                let serialized_ast = serde_json::to_string(inner_ast)?;
-                let subsh = Command::new(shell_exe)
-                    .env(AS_SUBSHELL, &serialized_ast)
-                    .stdin(c_stdin)
-                    .stdout(c_stdout)
-                    .spawn()?;
-                children.push(subsh);
+                children.push(subsh.spawn(c_stdin, c_stdout)?);
             },
-            _ => return Err(anyhow!("unreachable, pipe can only have Prog or Subshell")),
+            _ => anyhow::bail!("unreachable, pipe can only have Prog or Subshell"),
         }
         cur_pipe_read = next_pipe_read;
     }
@@ -229,7 +288,7 @@ fn spawn_pipeline(progs: &mut Vec<Box<AstNode>>) -> anyhow::Result<Vec<process::
 fn dfs(node: &mut Box<AstNode>) -> anyhow::Result<i32> {
     match &mut **node {
         AstNode::Builtin(builtin) => {
-            builtin.exec_builtin(None, None);
+            builtin.exec_builtin(None, None)?;
             return Ok(0);
         }
         AstNode::Prog(child_pr) => {
@@ -257,7 +316,7 @@ fn dfs(node: &mut Box<AstNode>) -> anyhow::Result<i32> {
                     } 
                     return Ok(lhs_code);
                 },
-                _ => return Err(anyhow!("unreachable; invalid op in Logical astnode"))
+                _ => anyhow::bail!("unreachable; invalid op in Logical astnode"),
             }
         },
         AstNode::Pipeline(pipeline) => {
@@ -276,13 +335,10 @@ fn dfs(node: &mut Box<AstNode>) -> anyhow::Result<i32> {
             }
             return Ok(0);
         },
-        AstNode::Subshell(inner_ast) => {
-            let shell_path = env::current_exe().expect("Failed to get current exe path for subshell");
-            let serialized_ast = serde_json::to_string(inner_ast)?;
-            let subsh_stat = Command::new(shell_path)
-                .env(AS_SUBSHELL, &serialized_ast)
-                .status()?;
-            return Ok(subsh_stat.code().unwrap_or(1));
+        AstNode::Subshell(subshell) => {
+            return Ok(subshell.status()?
+                .code()
+                .unwrap_or(1));
         },
     }
 }
@@ -320,9 +376,9 @@ fn set_cwd(args: &[&str], _pipe_reader: Option<PipeReader>) -> anyhow::Result<St
         env::set_current_dir(&new_cwd)?;
         return Ok("".to_string());
     } else if args.len() > 2 {
-        return Err(anyhow!("ERR cd: too many arguments for cd; {} is invalid", args[2]));
+        anyhow::bail!("ERR cd: too many arguments for cd; {} is invalid", args[2]);
     }
-    Err(anyhow!("unreachable"))
+    anyhow::bail!("unreachable");
 } 
 
 //TODO: fix
@@ -342,9 +398,9 @@ fn get_history(args: &[&str], _pipe_reader: Option<PipeReader>) -> anyhow::Resul
         match args[1].to_lowercase().as_ref() {
             "clear" => {
                 let success = RL_EDITOR.with_borrow_mut(|rl| { rl.history_mut().clear() }).is_ok();
-                if success { return Ok("command history cleared".to_string()) } else { return Err(anyhow!("Failed to clear history")) }
+                if success { return Ok("command history cleared".to_string()) } else { anyhow::bail!("Failed to clear history"); }
             }
-            _ => return Err(anyhow!("unrecognized history parameter {}", args[1])),
+            _ => anyhow::bail!("unrecognized history parameter {}", args[1]),
         };
     }
     let hist_len = RL_EDITOR.with_borrow(|h| h.history().len());

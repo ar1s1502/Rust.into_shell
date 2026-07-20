@@ -21,17 +21,21 @@ const HISTORY_PATH: &str = "rust_shell_history.txt";
 pub const AS_SUBSHELL: &str = "--as-subshell";
 
 struct ShellState {
-    pub debug: bool,
-    pub tty: bool,
+    pub debug: bool, //run in debug mode flag
+    pub tty: bool,   //connected to terminal?
+    pub user: String,
+    pub devicename: String,
     pub vars: HashMap<String, String>,
 }
 
-thread_local! {
+thread_local! { //create these in thread local memory so that it can be accessed like mutable globals across modules
     pub static RL_EDITOR: RefCell<DefaultEditor> = RefCell::new(DefaultEditor::new().expect("failed to initiate default editor"));
 
     pub static SHELL_STATE: RefCell<ShellState> = RefCell::new(ShellState {
         debug: false,
         tty: io::stdout().is_terminal() && io::stdin().is_terminal(),
+        user: whoami::account().unwrap_or("<unknown>".to_string()),
+        devicename: whoami::devicename().unwrap_or("<unknown>".to_string()).replace(" ","-"),
         vars: HashMap::new(),
     });
 }
@@ -48,12 +52,11 @@ OSC 133 syntax: \x1b]133;${data}\x07
 see https://contour-terminal.org/vt-extensions/osc-133-shell-integration/ 
 */
 const PROMPT_START: &str = "A";
-//custom OSC data key PROMPT_CONTINUE for PROMPT_START
 const PROMPT_END: &str = "B";
 const CMD_OUTPUT_START: &str = "C";
 const CMD_END: &str = "D";
 
-//only if --debug flag set
+//only if '--debug'/'-d' flag set
 fn print_cmd<'a> (tkns: &'a [TknSpan], heredocs: &VecDeque<&'a str>) {
     for tkn in tkns.iter() {
         println!("{:?}, {:?}", tkn.kind, tkn.span);
@@ -88,7 +91,7 @@ fn main() -> rustyline::Result<()> {
         }
     }
 
-    //else, this is running in the foreground, do REPL 
+    //this is running in the foreground, do REPL 
     send_osc133(CMD_OUTPUT_START);
     load_history()?;
     send_osc133(CMD_END);
@@ -115,7 +118,7 @@ fn main() -> rustyline::Result<()> {
                         send_osc133(CMD_OUTPUT_START);
                         if is_debug() { print_cmd(&tkns, &heredocs); }
                         if let Err(e) = execute_cmd_buf(&cmd_buf, &tkns, heredocs) {
-                            println!("ERR: {}", e);
+                            eprintln!("ERR: {}", e);
                         }
                         send_osc133(CMD_END);
                         set_normal_prompt(&mut prompt,);
@@ -160,7 +163,6 @@ fn main() -> rustyline::Result<()> {
                     send_osc133(PROMPT_END);
                     println!("CTRL-D");
                 }
-                set_normal_prompt(&mut prompt,);
                 let _ = exit_shell(&[""], None);
             },
             Err(err) => {
@@ -174,9 +176,9 @@ fn main() -> rustyline::Result<()> {
 
 fn set_normal_prompt(prompt: &mut String) { 
     let cwd = env::current_dir().unwrap().file_name().unwrap().to_str().unwrap().to_string();
-    let username = whoami::account().unwrap_or("<unknown>".to_string());
-    let devicename = whoami::devicename().unwrap_or("<unknown>".to_string()).replace(" ","-");
-    *prompt = format!("[rust_shell] {}@{}: {} % ", username, devicename, cwd);
+    SHELL_STATE.with_borrow(|s| {
+        *prompt = format!("[rust_shell] {}@{}: {} % ", &s.user, &s.devicename, cwd);
+    });
     send_osc133(PROMPT_START);
 }
 

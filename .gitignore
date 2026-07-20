@@ -1,2 +1,6 @@
 /target
-*.txt
+node_modules/
+./*.txt
+./*.log
+
+
